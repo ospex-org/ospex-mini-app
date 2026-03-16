@@ -1,4 +1,4 @@
-import Openfort from '@openfort/openfort-node';
+import Openfort, { ShieldAuthProvider } from '@openfort/openfort-node';
 import { SignJWT } from 'jose';
 
 let openfort: Openfort;
@@ -29,12 +29,21 @@ export async function authenticateTelegramUser(telegramUserId: string): Promise<
   const of = getOpenfort();
 
   // Create/get the player in Openfort with an embedded account.
-  const authResponse = await of.iam.v1.players.create({
-    thirdPartyProvider: 'custom',
-    thirdPartyUserId: `telegram_${telegramUserId}`,
-    preGenerateEmbeddedAccount: true,
-    chainId: 80002, // Polygon Amoy testnet
-  });
+  // Shield config is required when preGenerateEmbeddedAccount is true.
+  const authResponse = await of.iam.v1.players.create(
+    {
+      thirdPartyProvider: 'custom',
+      thirdPartyUserId: `telegram_${telegramUserId}`,
+      preGenerateEmbeddedAccount: true,
+      chainId: 80002, // Polygon Amoy testnet
+    },
+    {
+      shieldApiKey: process.env.NEXT_PUBLIC_SHIELD_PUBLISHABLE_KEY!,
+      shieldApiSecret: process.env.SHIELD_SECRET_KEY!,
+      encryptionShare: process.env.SHIELD_ENCRYPTION_SHARE!,
+      shieldAuthProvider: ShieldAuthProvider.OPENFORT,
+    },
+  );
 
   // Generate a JWT for the client-side SDK to authenticate.
   // This token is passed to authenticateWithThirdPartyProvider() on the client.
