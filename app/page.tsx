@@ -153,8 +153,10 @@ export default function WalletConnectPage() {
     // The SDK's openDeeplink hook is the primary mechanism,
     // but some internal code paths may still call window.open.
     // ----------------------------------------------------------
+    let originalOpen: typeof window.open | null = null;
+
     if (isTelegramEnvironment()) {
-      const originalOpen = window.open.bind(window);
+      originalOpen = window.open.bind(window);
 
       window.open = ((
         url?: string | URL,
@@ -171,7 +173,7 @@ export default function WalletConnectPage() {
           return null;
         }
 
-        return originalOpen(url, target, features);
+        return originalOpen!(url, target, features);
       }) as typeof window.open;
     }
 
@@ -194,6 +196,12 @@ export default function WalletConnectPage() {
 
     sdkRef.current = sdk;
     setFlowState("ready");
+
+    return () => {
+      if (originalOpen) {
+        window.open = originalOpen;
+      }
+    };
   }, []);
 
   // ----------------------------------------------------------
