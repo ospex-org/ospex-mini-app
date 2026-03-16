@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { initializeApp, getApps, cert } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
+import { buildChallengeMessage } from "@/lib/challenge";
 
 // Firebase Admin init (singleton)
 if (getApps().length === 0) {
@@ -14,20 +15,6 @@ if (getApps().length === 0) {
 }
 
 const db = getFirestore();
-
-/**
- * Build the challenge message that the user must sign.
- * Must match exactly what connect-wallet expects.
- */
-function buildChallengeMessage(telegramUserId: string, nonce: string): string {
-  return [
-    "Connect wallet to OspexBot",
-    `Telegram user: ${telegramUserId}`,
-    `Nonce: ${nonce}`,
-  ].join("\n");
-}
-
-export { buildChallengeMessage };
 
 /**
  * GET /api/link-token?token=abc123

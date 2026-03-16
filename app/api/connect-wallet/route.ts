@@ -3,7 +3,7 @@ import { createHmac } from "crypto";
 import { verifyMessage } from "ethers";
 import { initializeApp, getApps, cert } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
-import { buildChallengeMessage } from "../link-token/route";
+import { buildChallengeMessage } from "@/lib/challenge";
 
 // ============================================================
 // Firebase Admin init (singleton)
@@ -219,52 +219,7 @@ async function handleLinkTokenPath(body: {
 }) {
   const { linkToken, walletAddress, signature, message } = body;
 
-  // 1. Read token from Firestore
-  const tokenDoc = await db.collection("linkTokens").doc(linkToken).get();
-
-  if (!tokenDoc.exists) {
-    return NextResponse.json(
-      { error: "Token not found" },
-      { status: 404 }
-    );
-  }
-
-  const tokenData = tokenDoc.data()!;
-
-  // 2. Check token not used
-  if (tokenData.used) {
-    return NextResponse.json(
-      { error: "Token already used" },
-      { status: 410 }
-    );
-  }
-
-  // 3. Check token not expired
-  const expiresAt = tokenData.expiresAt instanceof Date
-    ? tokenData.expiresAt
-    : tokenData.expiresAt.toDate();
-
-  if (new Date() > expiresAt) {
-    return NextResponse.json(
-      { error: "Token expired" },
-      { status: 410 }
-    );
-  }
-
-  // 4. Reconstruct expected challenge message
-  const expectedMessage = buildChallengeMessage(
-    tokenData.telegramUserId,
-    tokenData.nonce
-  );
-
-  if (message !== expectedMessage) {
-    return NextResponse.json(
-      { error: "Invalid message format — message does not match server challenge" },
-      { status: 400 }
-    );
-  }
-
-  // 5. Verify wallet signature
+  // Validate signature before entering transaction (pure computation, no DB needed)
   if (!verifyWalletSignature(message, signature, walletAddress)) {
     return NextResponse.json(
       { error: "Invalid wallet signature" },
@@ -272,32 +227,93 @@ async function handleLinkTokenPath(body: {
     );
   }
 
-  // 6. Write wallet to botUsers
-  const telegramUserId = tokenData.telegramUserId;
+  // Atomic transaction: read token, validate, mark used, write wallet linkage
+  const tokenRef = db.collection("linkTokens").doc(linkToken);
 
-  await db
-    .collection("botUsers")
-    .doc(String(telegramUserId))
-    .set(
-      {
+  // Use a class so TS control flow recognizes the type in the catch block
+  class TransactionAbortError extends Error {
+    constructor(
+      public readonly clientError: string,
+      public readonly statusCode: number
+    ) {
+      super("abort");
+    }
+  }
+
+  try {
+    await db.runTransaction(async (tx) => {
+      const tokenDoc = await tx.get(tokenRef);
+
+      // 1. Check token exists
+      if (!tokenDoc.exists) {
+        throw new TransactionAbortError("Token not found", 404);
+      }
+
+      const tokenData = tokenDoc.data()!;
+
+      // 2. Check token not used
+      if (tokenData.used) {
+        throw new TransactionAbortError("Token already used", 410);
+      }
+
+      // 3. Check token not expired
+      const expiresAt = tokenData.expiresAt instanceof Date
+        ? tokenData.expiresAt
+        : tokenData.expiresAt.toDate();
+
+      if (new Date() > expiresAt) {
+        throw new TransactionAbortError("Token expired", 410);
+      }
+
+      // 4. Verify message matches server challenge
+      const expectedMessage = buildChallengeMessage(
+        tokenData.telegramUserId,
+        tokenData.nonce
+      );
+
+      if (message !== expectedMessage) {
+        throw new TransactionAbortError(
+          "Invalid message format — message does not match server challenge",
+          400
+        );
+      }
+
+      // 5. Mark token as used
+      tx.update(tokenRef, {
+        used: true,
+        usedAt: new Date().toISOString(),
         walletAddress: walletAddress.toLowerCase(),
-        custody: "self",
-        linkMethod: "metamask_browser",
-        connectedAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      },
-      { merge: true }
-    );
+      });
 
-  // 7. Mark token as used
-  await db.collection("linkTokens").doc(linkToken).update({
-    used: true,
-    usedAt: new Date().toISOString(),
-    walletAddress: walletAddress.toLowerCase(),
-  });
+      // 6. Write wallet to botUsers
+      const userRef = db
+        .collection("botUsers")
+        .doc(String(tokenData.telegramUserId));
+
+      tx.set(
+        userRef,
+        {
+          walletAddress: walletAddress.toLowerCase(),
+          custody: "self",
+          linkMethod: "metamask_browser",
+          connectedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true }
+      );
+    });
+  } catch (err) {
+    if (err instanceof TransactionAbortError) {
+      return NextResponse.json(
+        { error: err.clientError },
+        { status: err.statusCode }
+      );
+    }
+    throw err;
+  }
 
   console.log(
-    `[connect-wallet] Path B: Saved wallet ${walletAddress} for user ${telegramUserId} (token: ${linkToken})`
+    `[connect-wallet] Path B: Saved wallet ${walletAddress} for token ${linkToken}`
   );
 
   return NextResponse.json({ success: true, walletAddress });
