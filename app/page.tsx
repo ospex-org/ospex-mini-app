@@ -222,13 +222,11 @@ async function runSetup(initData: string): Promise<{
 
   // Step 3: Create wallet with Openfort JS SDK
   debugLog('openfort-sdk-import', 'starting');
-  let Openfort, EmbeddedState, ThirdPartyOAuthProvider, TokenType;
+  let Openfort, EmbeddedState;
   try {
     ({
       default: Openfort,
       EmbeddedState,
-      ThirdPartyOAuthProvider,
-      TokenType,
     } = await import('@openfort/openfort-js'));
     debugLog('openfort-sdk-import', 'success');
   } catch (err) {
@@ -260,17 +258,37 @@ async function runSetup(initData: string): Promise<{
   });
   debugLog('openfort-sdk-init', 'success');
 
-  debugLog('authenticate-third-party', 'starting');
+  // Proxy the Openfort auth call server-side because Telegram WebView
+  // blocks cross-origin requests to api.openfort.xyz.
+  debugLog('server-side-auth', 'starting');
   try {
-    await openfort.authenticateWithThirdPartyProvider({
-      provider: ThirdPartyOAuthProvider.CUSTOM,
-      token: authData.openfortToken,
-      tokenType: TokenType.CUSTOM_TOKEN,
+    const loginRes = await fetch('/api/auth/openfort-login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: authData.openfortToken }),
     });
-    debugLog('authenticate-third-party', 'success');
+
+    if (!loginRes.ok) {
+      const errData = await loginRes.json();
+      throw new Error(errData.error || `Server auth failed: ${loginRes.status}`);
+    }
+
+    const loginData = await loginRes.json();
+    debugLog('server-side-auth', 'success', undefined, `playerId=${loginData.playerId}`);
+
+    // Use storeCredentials to set the SDK's auth state with the
+    // tokens returned by the Openfort API (proxied through our server).
+    const ofResponse = loginData.openfortResponse;
+    debugLog('store-credentials', 'starting');
+    openfort.storeCredentials({
+      player: ofResponse.player?.id ?? ofResponse.id,
+      accessToken: ofResponse.token,
+      refreshToken: ofResponse.refreshToken,
+    });
+    debugLog('store-credentials', 'success');
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    debugLog('authenticate-third-party', 'error', msg);
+    debugLog('server-side-auth', 'error', msg);
     throw err;
   }
 
