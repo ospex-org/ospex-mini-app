@@ -96,18 +96,16 @@ let onDebugUrl: ((url: string) => void) | null = null;
 
 /**
  * Open a URL from within the Telegram Mini App.
- * Prefers Telegram.WebApp.openLink, falls back to window.location.
+ * Uses window.location.href to trigger OS universal link handler
+ * directly from the WebView, rather than Telegram.WebApp.openLink()
+ * which routes through an external browser.
  */
 function openLinkFromTelegram(url: string): void {
   const normalized = normalizeMetaMaskLink(url);
   console.log(`[ospex] openLinkFromTelegram: ${normalized}`);
-  onDebugUrl?.(normalized);
+  onDebugUrl?.(`[${new Date().toISOString().slice(11, 19)}] ${normalized}`);
 
-  if (window.Telegram?.WebApp?.openLink) {
-    window.Telegram.WebApp.openLink(normalized);
-  } else {
-    window.location.href = normalized;
-  }
+  window.location.href = normalized;
 }
 
 // ============================================================
