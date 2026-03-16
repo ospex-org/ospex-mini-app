@@ -1,403 +1,510 @@
-'use client';
+"use client";
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef, useCallback } from "react";
+import { MetaMaskSDK } from "@metamask/sdk";
 
-// Declare Telegram WebApp global
-declare global {
-  interface Window {
-    Telegram?: {
-      WebApp: {
-        initData: string;
-        initDataUnsafe: {
-          user?: {
-            id: number;
-            first_name: string;
-            last_name?: string;
-            username?: string;
-          };
-        };
-        ready: () => void;
-        close: () => void;
-        expand: () => void;
-        MainButton: {
-          text: string;
-          show: () => void;
-          hide: () => void;
-          onClick: (fn: () => void) => void;
-          offClick: (fn: () => void) => void;
-        };
-        themeParams: {
-          bg_color?: string;
-          text_color?: string;
-          hint_color?: string;
-          button_color?: string;
-          button_text_color?: string;
-        };
-      };
+// ============================================================
+// Types
+// ============================================================
+
+type FlowState =
+  | "initializing"
+  | "ready"
+  | "connecting"
+  | "connected"
+  | "signing"
+  | "submitting"
+  | "success"
+  | "error";
+
+interface TelegramWebApp {
+  initData: string;
+  initDataUnsafe: {
+    user?: {
+      id: number;
+      first_name: string;
+      username?: string;
     };
-  }
-}
-
-type AppState =
-  | { step: 'loading' }
-  | { step: 'existing'; walletAddress: string }
-  | { step: 'creating' }
-  | { step: 'done'; walletAddress: string }
-  | { step: 'error'; message: string };
-
-export default function WalletSetupPage() {
-  const [state, setState] = useState<AppState>({ step: 'loading' });
-
-  useEffect(() => {
-    const tg = window.Telegram?.WebApp;
-    if (!tg) {
-      setState({ step: 'error', message: 'Please open this from Telegram.' });
-      return;
-    }
-
-    // Tell Telegram we're ready and expand to full height
-    tg.ready();
-    tg.expand();
-
-    // Start the auth + wallet creation flow
-    runSetup(tg.initData)
-      .then((result) => {
-        if (result.existing) {
-          setState({ step: 'existing', walletAddress: result.walletAddress });
-        } else {
-          setState({ step: 'done', walletAddress: result.walletAddress });
-        }
-      })
-      .catch((err: unknown) => {
-        console.error('Setup failed:', err);
-        const message = err instanceof Error ? err.message : String(err);
-        const stack = err instanceof Error ? err.stack : undefined;
-        if (stack) console.error('Stack:', stack);
-        setState({ step: 'error', message });
-      });
-  }, []);
-
-  // Wire up the Telegram MainButton for closing
-  useEffect(() => {
-    const tg = window.Telegram?.WebApp;
-    if (!tg) return;
-
-    if (state.step === 'done' || state.step === 'existing') {
-      tg.MainButton.text = 'Back to Ospex Bot';
-      tg.MainButton.show();
-      const close = () => tg.close();
-      tg.MainButton.onClick(close);
-      return () => tg.MainButton.offClick(close);
-    } else {
-      tg.MainButton.hide();
-    }
-  }, [state.step]);
-
-  return (
-    <div style={{ maxWidth: 400, margin: '0 auto', textAlign: 'center', paddingTop: 40 }}>
-      {/* Logo / Header */}
-      <h1 style={{ fontSize: 24, marginBottom: 8 }}>ospex</h1>
-      <p style={{
-        fontSize: 14,
-        opacity: 0.6,
-        marginBottom: 40,
-      }}>
-        peer-to-peer sports betting
-      </p>
-
-      {state.step === 'loading' && (
-        <div>
-          <Spinner />
-          <p style={{ marginTop: 16 }}>Checking your account...</p>
-        </div>
-      )}
-
-      {state.step === 'creating' && (
-        <div>
-          <Spinner />
-          <p style={{ marginTop: 16 }}>Creating your wallet...</p>
-          <p style={{ fontSize: 12, opacity: 0.5, marginTop: 8 }}>
-            This is a non-custodial wallet. Only you control your funds.
-          </p>
-        </div>
-      )}
-
-      {state.step === 'existing' && (
-        <div>
-          <div style={{ fontSize: 48, marginBottom: 16 }}>✓</div>
-          <p style={{ fontWeight: 600, marginBottom: 8 }}>Wallet already set up!</p>
-          <WalletDisplay address={state.walletAddress} />
-          <p style={{ fontSize: 13, opacity: 0.5, marginTop: 16 }}>
-            You can close this and start betting.
-          </p>
-        </div>
-      )}
-
-      {state.step === 'done' && (
-        <div>
-          <div style={{ fontSize: 48, marginBottom: 16 }}>🎉</div>
-          <p style={{ fontWeight: 600, marginBottom: 8 }}>Wallet created!</p>
-          <WalletDisplay address={state.walletAddress} />
-          <p style={{ fontSize: 13, opacity: 0.5, marginTop: 16 }}>
-            Fund this address with USDC on Polygon to start betting.
-            <br />
-            You can close this and return to the bot.
-          </p>
-        </div>
-      )}
-
-      {state.step === 'error' && (
-        <div>
-          <div style={{ fontSize: 48, marginBottom: 16 }}>⚠️</div>
-          <p style={{ fontWeight: 600, marginBottom: 8 }}>Setup failed</p>
-          <p style={{ fontSize: 13, opacity: 0.7 }}>{state.message}</p>
-          <button
-            onClick={() => window.location.reload()}
-            style={{
-              marginTop: 24,
-              padding: '12px 24px',
-              borderRadius: 8,
-              border: 'none',
-              backgroundColor: 'var(--tg-theme-button-color, #5288c1)',
-              color: 'var(--tg-theme-button-text-color, #ffffff)',
-              fontSize: 14,
-              cursor: 'pointer',
-            }}
-          >
-            Try Again
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * Fire-and-forget log to server so we can see client-side steps in Vercel logs.
- */
-function debugLog(step: string, status: string, error?: string, detail?: string) {
-  fetch('/api/debug-log', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ step, status, error, detail }),
-  }).catch(() => { /* ignore logging failures */ });
-}
-
-/**
- * The core setup flow:
- * 1. Send initData to our backend for Telegram validation + Openfort auth
- * 2. If user already has wallet → return it
- * 3. If new user → use Openfort JS SDK to create embedded wallet
- * 4. Save wallet address to Firestore
- */
-async function runSetup(initData: string): Promise<{
-  walletAddress: string;
-  existing: boolean;
-}> {
-  // Step 1: Authenticate via our backend
-  debugLog('auth-call', 'starting', undefined, `initData length: ${initData.length}`);
-  const authRes = await fetch('/api/auth/telegram', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ initData }),
-  });
-
-  if (!authRes.ok) {
-    const err = await authRes.json();
-    debugLog('auth-call', 'error', err.error || `HTTP ${authRes.status}`, JSON.stringify(err));
-    throw new Error(err.error || 'Authentication failed');
-  }
-
-  const authData = await authRes.json();
-  debugLog('auth-call', 'success', undefined, `status=${authData.status} playerId=${authData.playerId}`);
-
-  // Step 2: Already has wallet
-  if (authData.status === 'existing') {
-    debugLog('existing-wallet', 'success', undefined, `wallet=${authData.walletAddress}`);
-    return {
-      walletAddress: authData.walletAddress,
-      existing: true,
-    };
-  }
-
-  // Step 3: Create wallet with Openfort JS SDK
-  debugLog('openfort-sdk-import', 'starting');
-  let Openfort, EmbeddedState;
-  try {
-    ({
-      default: Openfort,
-      EmbeddedState,
-    } = await import('@openfort/openfort-js'));
-    debugLog('openfort-sdk-import', 'success');
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    debugLog('openfort-sdk-import', 'error', msg);
-    throw err;
-  }
-
-  debugLog('encryption-session', 'starting');
-  let encryptionSession: string;
-  try {
-    encryptionSession = await getEncryptionSession();
-    debugLog('encryption-session', 'success');
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    debugLog('encryption-session', 'error', msg);
-    throw err;
-  }
-
-  debugLog('openfort-sdk-init', 'starting');
-  const openfort = new Openfort({
-    baseConfiguration: {
-      publishableKey: process.env.NEXT_PUBLIC_OPENFORT_PUBLISHABLE_KEY!,
-    },
-    shieldConfiguration: {
-      shieldPublishableKey: process.env.NEXT_PUBLIC_SHIELD_PUBLISHABLE_KEY!,
-      shieldEncryptionKey: encryptionSession,
-    },
-  });
-  debugLog('openfort-sdk-init', 'success');
-
-  // Proxy the Openfort auth call server-side because Telegram WebView
-  // blocks cross-origin requests to api.openfort.xyz.
-  debugLog('server-side-auth', 'starting');
-  try {
-    const loginRes = await fetch('/api/auth/openfort-login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: authData.openfortToken }),
-    });
-
-    if (!loginRes.ok) {
-      const errData = await loginRes.json();
-      throw new Error(errData.error || `Server auth failed: ${loginRes.status}`);
-    }
-
-    const loginData = await loginRes.json();
-    debugLog('server-side-auth', 'success', undefined, `playerId=${loginData.playerId}`);
-
-    // Use storeCredentials to set the SDK's auth state with the
-    // tokens returned by the Openfort API (proxied through our server).
-    const ofResponse = loginData.openfortResponse;
-    debugLog('store-credentials', 'starting');
-    openfort.storeCredentials({
-      player: ofResponse.player?.id ?? ofResponse.id,
-      accessToken: ofResponse.token,
-      refreshToken: ofResponse.refreshToken,
-    });
-    debugLog('store-credentials', 'success');
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    debugLog('server-side-auth', 'error', msg);
-    throw err;
-  }
-
-  debugLog('get-embedded-state', 'starting');
-  const embeddedState = openfort.getEmbeddedState();
-  debugLog('get-embedded-state', 'success', undefined, `state=${embeddedState}`);
-
-  if (embeddedState !== EmbeddedState.READY) {
-    debugLog('configure-embedded-signer', 'starting');
-    try {
-      await openfort.configureEmbeddedSigner();
-      debugLog('configure-embedded-signer', 'success');
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      debugLog('configure-embedded-signer', 'error', msg);
-      throw err;
-    }
-  }
-
-  debugLog('get-ethereum-provider', 'starting');
-  let walletAddress: string;
-  try {
-    const accounts = await openfort.getEthereumProvider().request({
-      method: 'eth_accounts',
-    }) as string[];
-    walletAddress = accounts[0];
-    debugLog('get-ethereum-provider', 'success', undefined, `wallet=${walletAddress}`);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    debugLog('get-ethereum-provider', 'error', msg);
-    throw err;
-  }
-
-  if (!walletAddress) {
-    debugLog('get-ethereum-provider', 'error', 'No wallet address returned (empty accounts array)');
-    throw new Error('Failed to get wallet address');
-  }
-
-  // Step 4: Save to Firestore
-  debugLog('save-wallet', 'starting');
-  try {
-    await fetch('/api/save-wallet', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        telegramUserId: authData.telegramUserId,
-        walletAddress,
-        openfortPlayerId: authData.playerId,
-      }),
-    });
-    debugLog('save-wallet', 'success');
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    debugLog('save-wallet', 'error', msg);
-    throw err;
-  }
-
-  return {
-    walletAddress,
-    existing: false,
+    query_id?: string;
+  };
+  openLink: (url: string) => void;
+  close: () => void;
+  ready: () => void;
+  expand: () => void;
+  MainButton: {
+    text: string;
+    show: () => void;
+    hide: () => void;
+    onClick: (cb: () => void) => void;
+    offClick: (cb: () => void) => void;
+    enable: () => void;
+    disable: () => void;
+    showProgress: (leaveActive?: boolean) => void;
+    hideProgress: () => void;
+    isVisible: boolean;
+    isActive: boolean;
+    color: string;
+    textColor: string;
+    setText: (text: string) => void;
+    setParams: (params: Record<string, unknown>) => void;
+  };
+  themeParams: {
+    bg_color?: string;
+    text_color?: string;
+    hint_color?: string;
+    link_color?: string;
+    button_color?: string;
+    button_text_color?: string;
+    secondary_bg_color?: string;
   };
 }
 
+declare global {
+  interface Window {
+    Telegram?: {
+      WebApp?: TelegramWebApp;
+    };
+  }
+}
+
+// ============================================================
+// Helpers
+// ============================================================
+
+function isTelegramEnvironment(): boolean {
+  if (typeof window === "undefined") return false;
+  return !!(window.Telegram?.WebApp?.initData);
+}
+
 /**
- * Get a Shield encryption session from our backend.
- * Used for automatic wallet recovery.
+ * Convert metamask:// deep links to universal links.
+ * Telegram's WebView can't dispatch custom URL schemes reliably,
+ * but https://metamask.app.link/ routes through universal links
+ * which the OS handles correctly.
  */
-async function getEncryptionSession(): Promise<string> {
-  const res = await fetch('/api/create-encryption-session', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-  });
-
-  if (!res.ok) throw new Error('Failed to create encryption session');
-
-  const data = await res.json();
-  return data.session;
+function normalizeMetaMaskLink(link: string): string {
+  if (link.startsWith("metamask://")) {
+    return `https://metamask.app.link/${link.slice("metamask://".length)}`;
+  }
+  return link;
 }
 
-/** Simple spinner component */
-function Spinner() {
-  return (
-    <div style={{
-      width: 40,
-      height: 40,
-      border: '3px solid rgba(255,255,255,0.2)',
-      borderTopColor: 'var(--tg-theme-button-color, #5288c1)',
-      borderRadius: '50%',
-      animation: 'spin 0.8s linear infinite',
-      margin: '0 auto',
-    }}>
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-    </div>
-  );
+/**
+ * Open a URL from within the Telegram Mini App.
+ * Prefers Telegram.WebApp.openLink, falls back to window.location.
+ */
+function openLinkFromTelegram(url: string): void {
+  const normalized = normalizeMetaMaskLink(url);
+  console.log(`[ospex] openLinkFromTelegram: ${normalized}`);
+
+  if (window.Telegram?.WebApp?.openLink) {
+    window.Telegram.WebApp.openLink(normalized);
+  } else {
+    window.location.href = normalized;
+  }
 }
 
-/** Wallet address display with truncation */
-function WalletDisplay({ address }: { address: string }) {
-  const truncated = `${address.slice(0, 6)}...${address.slice(-4)}`;
+// ============================================================
+// Component
+// ============================================================
+
+export default function WalletConnectPage() {
+  const [flowState, setFlowState] = useState<FlowState>("initializing");
+  const [walletAddress, setWalletAddress] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [telegramUserId, setTelegramUserId] = useState<number | null>(null);
+
+  const [theme, setTheme] = useState<TelegramWebApp["themeParams"] | undefined>(undefined);
+
+  const sdkRef = useRef<MetaMaskSDK | null>(null);
+  const initCalledRef = useRef(false);
+
+  // ----------------------------------------------------------
+  // Initialize Telegram + MetaMask SDK
+  // ----------------------------------------------------------
+
+  useEffect(() => {
+    if (initCalledRef.current) return;
+    initCalledRef.current = true;
+
+    const tg = window.Telegram?.WebApp;
+
+    // Tell Telegram the mini-app is ready
+    if (tg) {
+      tg.ready();
+      tg.expand();
+      setTheme(tg.themeParams);
+    }
+
+    // Extract Telegram user ID
+    const userId = tg?.initDataUnsafe?.user?.id ?? null;
+    setTelegramUserId(userId);
+
+    if (!userId) {
+      setErrorMessage(
+        "Could not identify Telegram user. Please open this app from the Ospex bot."
+      );
+      setFlowState("error");
+      return;
+    }
+
+    // ----------------------------------------------------------
+    // Install window.open safety net BEFORE SDK init.
+    // The SDK's openDeeplink hook is the primary mechanism,
+    // but some internal code paths may still call window.open.
+    // ----------------------------------------------------------
+    let originalOpen: typeof window.open | null = null;
+
+    if (isTelegramEnvironment()) {
+      originalOpen = window.open.bind(window);
+
+      window.open = ((
+        url?: string | URL,
+        target?: string,
+        features?: string
+      ) => {
+        const raw = String(url ?? "");
+
+        if (
+          raw.startsWith("metamask://") ||
+          raw.includes("metamask.app.link")
+        ) {
+          openLinkFromTelegram(raw);
+          return null;
+        }
+
+        return originalOpen!(url, target, features);
+      }) as typeof window.open;
+    }
+
+    // ----------------------------------------------------------
+    // Initialize MetaMask SDK with openDeeplink hook
+    // ----------------------------------------------------------
+    const sdk = new MetaMaskSDK({
+      dappMetadata: {
+        name: "Ospex",
+        url: "https://ospex-mini-app.vercel.app",
+      },
+      useDeeplink: true,
+      openDeeplink: (link: string) => {
+        openLinkFromTelegram(link);
+      },
+      // On desktop Telegram, this shows a QR code in the mini-app.
+      // On mobile, it triggers the MetaMask app via universal link.
+      checkInstallationImmediately: false,
+    });
+
+    sdkRef.current = sdk;
+    setFlowState("ready");
+
+    return () => {
+      if (originalOpen) {
+        window.open = originalOpen;
+      }
+    };
+  }, []);
+
+  // ----------------------------------------------------------
+  // Connect wallet
+  // ----------------------------------------------------------
+
+  const handleConnect = useCallback(async () => {
+    const sdk = sdkRef.current;
+    if (!sdk) return;
+
+    setFlowState("connecting");
+    setErrorMessage(null);
+
+    try {
+      const accounts = (await sdk.connect()) as string[] | undefined;
+
+      if (!accounts || accounts.length === 0) {
+        throw new Error("No accounts returned from MetaMask");
+      }
+
+      const address = accounts[0];
+      setWalletAddress(address);
+      setFlowState("connected");
+      console.log(`[ospex] Connected: ${address}`);
+    } catch (err: unknown) {
+      console.error("[ospex] Connect error:", err);
+      const msg =
+        err instanceof Error ? err.message : "Failed to connect MetaMask";
+      setErrorMessage(msg);
+      setFlowState("error");
+    }
+  }, []);
+
+  // ----------------------------------------------------------
+  // Sign message to prove ownership, then POST to backend
+  // ----------------------------------------------------------
+
+  const handleSignAndSubmit = useCallback(async () => {
+    const sdk = sdkRef.current;
+    if (!sdk || !walletAddress || !telegramUserId) return;
+
+    setFlowState("signing");
+    setErrorMessage(null);
+
+    const message = `Connect wallet to OspexBot: ${telegramUserId}`;
+
+    try {
+      const provider = sdk.getProvider();
+      if (!provider) throw new Error("No provider available");
+
+      // Request personal_sign
+      const signature = (await provider.request({
+        method: "personal_sign",
+        params: [
+          `0x${Buffer.from(message, "utf8").toString("hex")}`,
+          walletAddress,
+        ],
+      })) as string;
+
+      console.log(`[ospex] Signature obtained`);
+      setFlowState("submitting");
+
+      // POST to backend
+      const initData = window.Telegram?.WebApp?.initData ?? "";
+
+      const response = await fetch("/api/connect-wallet", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          telegramUserId,
+          walletAddress,
+          signature,
+          message,
+          initData,
+        }),
+      });
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(
+          body.error ?? `Server error: ${response.status}`
+        );
+      }
+
+      setFlowState("success");
+      console.log(`[ospex] Wallet connected successfully`);
+
+      // Auto-close back to the bot after a short delay
+      setTimeout(() => {
+        window.Telegram?.WebApp?.close();
+      }, 2500);
+    } catch (err: unknown) {
+      console.error("[ospex] Sign/submit error:", err);
+      const msg =
+        err instanceof Error
+          ? err.message
+          : "Failed to sign or submit wallet connection";
+      setErrorMessage(msg);
+      setFlowState("error");
+    }
+  }, [walletAddress, telegramUserId]);
+
+  // ----------------------------------------------------------
+  // Render
+  // ----------------------------------------------------------
+
+  const containerStyle: React.CSSProperties = {
+    minHeight: "100vh",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "24px",
+    fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+    backgroundColor: theme?.bg_color ?? "#1a1a2e",
+    color: theme?.text_color ?? "#e0e0e0",
+  };
+
+  const cardStyle: React.CSSProperties = {
+    width: "100%",
+    maxWidth: "360px",
+    backgroundColor: theme?.secondary_bg_color ?? "#16213e",
+    borderRadius: "16px",
+    padding: "32px 24px",
+    textAlign: "center",
+  };
+
+  const buttonStyle: React.CSSProperties = {
+    width: "100%",
+    padding: "14px 24px",
+    borderRadius: "12px",
+    border: "none",
+    fontSize: "16px",
+    fontWeight: 600,
+    cursor: "pointer",
+    backgroundColor: theme?.button_color ?? "#e94560",
+    color: theme?.button_text_color ?? "#ffffff",
+    marginTop: "16px",
+  };
+
+  const truncateAddress = (addr: string) =>
+    `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+
   return (
-    <div style={{
-      backgroundColor: 'rgba(255,255,255,0.08)',
-      borderRadius: 12,
-      padding: '12px 16px',
-      fontFamily: 'monospace',
-      fontSize: 14,
-      marginTop: 8,
-    }}>
-      {truncated}
+    <div style={containerStyle}>
+      <div style={cardStyle}>
+        {/* Header */}
+        <h1 style={{ fontSize: "22px", margin: "0 0 8px 0" }}>
+          Ospex Wallet
+        </h1>
+        <p
+          style={{
+            fontSize: "14px",
+            color: theme?.hint_color ?? "#888",
+            margin: "0 0 24px 0",
+          }}
+        >
+          Connect your MetaMask wallet to place bets
+        </p>
+
+        {/* ------- Initializing ------- */}
+        {flowState === "initializing" && (
+          <p style={{ fontSize: "14px" }}>Initializing...</p>
+        )}
+
+        {/* ------- Ready: show Connect button ------- */}
+        {flowState === "ready" && (
+          <button style={buttonStyle} onClick={handleConnect}>
+            Connect MetaMask
+          </button>
+        )}
+
+        {/* ------- Connecting: waiting for MetaMask ------- */}
+        {flowState === "connecting" && (
+          <>
+            <p style={{ fontSize: "14px" }}>
+              Opening MetaMask...
+            </p>
+            <p
+              style={{
+                fontSize: "12px",
+                color: theme?.hint_color ?? "#888",
+                marginTop: "8px",
+              }}
+            >
+              Approve the connection in MetaMask, then return here.
+            </p>
+          </>
+        )}
+
+        {/* ------- Connected: show address + Sign button ------- */}
+        {flowState === "connected" && walletAddress && (
+          <>
+            <p style={{ fontSize: "14px", marginBottom: "4px" }}>
+              Connected
+            </p>
+            <p
+              style={{
+                fontSize: "18px",
+                fontWeight: 600,
+                fontFamily: "monospace",
+                margin: "4px 0 16px 0",
+              }}
+            >
+              {truncateAddress(walletAddress)}
+            </p>
+            <p
+              style={{
+                fontSize: "13px",
+                color: theme?.hint_color ?? "#888",
+                marginBottom: "8px",
+              }}
+            >
+              Sign a message to verify you own this wallet.
+            </p>
+            <button style={buttonStyle} onClick={handleSignAndSubmit}>
+              Sign &amp; Connect
+            </button>
+          </>
+        )}
+
+        {/* ------- Signing ------- */}
+        {flowState === "signing" && (
+          <>
+            <p style={{ fontSize: "14px" }}>
+              Signing message...
+            </p>
+            <p
+              style={{
+                fontSize: "12px",
+                color: theme?.hint_color ?? "#888",
+                marginTop: "8px",
+              }}
+            >
+              Confirm the signature in MetaMask, then return here.
+            </p>
+          </>
+        )}
+
+        {/* ------- Submitting ------- */}
+        {flowState === "submitting" && (
+          <p style={{ fontSize: "14px" }}>
+            Saving wallet...
+          </p>
+        )}
+
+        {/* ------- Success ------- */}
+        {flowState === "success" && (
+          <>
+            <p style={{ fontSize: "40px", margin: "0 0 12px 0" }}>
+              ✓
+            </p>
+            <p style={{ fontSize: "16px", fontWeight: 600 }}>
+              Wallet connected!
+            </p>
+            {walletAddress && (
+              <p
+                style={{
+                  fontSize: "14px",
+                  fontFamily: "monospace",
+                  color: theme?.hint_color ?? "#888",
+                  marginTop: "4px",
+                }}
+              >
+                {truncateAddress(walletAddress)}
+              </p>
+            )}
+            <p
+              style={{
+                fontSize: "13px",
+                color: theme?.hint_color ?? "#888",
+                marginTop: "12px",
+              }}
+            >
+              Closing...
+            </p>
+          </>
+        )}
+
+        {/* ------- Error ------- */}
+        {flowState === "error" && (
+          <>
+            <p
+              style={{
+                fontSize: "14px",
+                color: "#e94560",
+                marginBottom: "12px",
+              }}
+            >
+              {errorMessage ?? "Something went wrong."}
+            </p>
+            <button
+              style={buttonStyle}
+              onClick={() => {
+                setErrorMessage(null);
+                setFlowState(walletAddress ? "connected" : "ready");
+              }}
+            >
+              Try Again
+            </button>
+          </>
+        )}
+      </div>
     </div>
   );
 }
