@@ -1,5 +1,4 @@
 import Openfort, { ShieldAuthProvider } from '@openfort/openfort-node';
-import { SignJWT } from 'jose';
 
 let openfort: Openfort;
 
@@ -74,17 +73,9 @@ export async function authenticateTelegramUser(telegramUserId: string): Promise<
     }
   }
 
-  // Generate a JWT for the client-side SDK to authenticate.
-  // This token is passed to authenticateWithThirdPartyProvider() on the client.
-  const secretKey = process.env.OPENFORT_SECRET_KEY;
-  if (!secretKey) throw new Error('OPENFORT_SECRET_KEY is required');
-
-  const secret = new TextEncoder().encode(secretKey);
-  const token = await new SignJWT({ sub: `telegram_${telegramUserId}` })
-    .setProtectedHeader({ alg: 'HS256' })
-    .setIssuedAt()
-    .setExpirationTime('1h')
-    .sign(secret);
+  // The token is the thirdPartyUserId string. Openfort forwards it to our
+  // /api/auth/verify endpoint which echoes it back as { userId, email }.
+  const token = `telegram_${telegramUserId}`;
 
   return {
     playerId,
