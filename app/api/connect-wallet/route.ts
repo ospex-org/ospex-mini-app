@@ -3,6 +3,7 @@ import { createHmac } from "crypto";
 import { verifyMessage } from "ethers";
 import { initializeApp, getApps, cert } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
+import { buildChallengeMessage } from "../link-token/route";
 
 // ============================================================
 // Firebase Admin init (singleton)
@@ -24,19 +25,6 @@ const db = getFirestore();
 // Telegram initData validation
 // ============================================================
 
-/**
- * Validates Telegram Mini App initData using HMAC-SHA256.
- * See: https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app
- *
- * Steps:
- * 1. Parse the initData query string
- * 2. Extract the `hash` param
- * 3. Sort remaining params alphabetically
- * 4. Build data-check-string: "key=value\nkey=value\n..."
- * 5. Compute secret_key = HMAC-SHA256("WebAppData", bot_token)
- * 6. Compute hash = HMAC-SHA256(secret_key, data_check_string)
- * 7. Compare with received hash
- */
 function validateTelegramInitData(initData: string): {
   valid: boolean;
   userId?: number;
@@ -52,7 +40,6 @@ function validateTelegramInitData(initData: string): {
     const hash = params.get("hash");
     if (!hash) return { valid: false };
 
-    // Remove hash from params, sort remaining
     params.delete("hash");
     const dataCheckArr: string[] = [];
     params.forEach((value, key) => {
@@ -61,7 +48,6 @@ function validateTelegramInitData(initData: string): {
     dataCheckArr.sort();
     const dataCheckString = dataCheckArr.join("\n");
 
-    // Compute HMAC
     const secretKey = createHmac("sha256", "WebAppData")
       .update(botToken)
       .digest();
@@ -75,7 +61,6 @@ function validateTelegramInitData(initData: string): {
       return { valid: false };
     }
 
-    // Extract user ID from the validated data
     const userParam = params.get("user");
     if (userParam) {
       const user = JSON.parse(userParam);
@@ -93,10 +78,6 @@ function validateTelegramInitData(initData: string): {
 // Signature verification
 // ============================================================
 
-/**
- * Verifies that the signature was produced by the claimed wallet address.
- * Uses ethers v6 verifyMessage.
- */
 function verifyWalletSignature(
   message: string,
   signature: string,
@@ -112,104 +93,33 @@ function verifyWalletSignature(
 }
 
 // ============================================================
-// POST handler
+// POST handler — two auth paths
 // ============================================================
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { telegramUserId, walletAddress, signature, message, initData } =
-      body;
+    const { walletAddress, signature, message } = body;
 
-    // ----------------------------------------------------------
-    // 1. Basic field validation
-    // ----------------------------------------------------------
-    if (!telegramUserId || !walletAddress || !signature || !message) {
+    // Common field validation
+    if (!walletAddress || !signature || !message) {
       return NextResponse.json(
-        { error: "Missing required fields" },
+        { error: "Missing required fields (walletAddress, signature, message)" },
         { status: 400 }
       );
     }
 
-    // ----------------------------------------------------------
-    // 2. Validate Telegram initData
-    // ----------------------------------------------------------
-    if (!initData) {
+    // Route to the correct auth path
+    if (body.linkToken) {
+      return handleLinkTokenPath(body);
+    } else if (body.initData) {
+      return handleInitDataPath(body);
+    } else {
       return NextResponse.json(
-        { error: "Missing Telegram initData" },
+        { error: "Missing auth method: provide either linkToken or initData" },
         { status: 400 }
       );
     }
-
-    const telegramValidation = validateTelegramInitData(initData);
-
-    if (!telegramValidation.valid) {
-      return NextResponse.json(
-        { error: "Invalid Telegram authentication" },
-        { status: 403 }
-      );
-    }
-
-    // Cross-check: the user ID in initData should match the claimed user ID
-    if (
-      telegramValidation.userId &&
-      telegramValidation.userId !== telegramUserId
-    ) {
-      return NextResponse.json(
-        { error: "Telegram user ID mismatch" },
-        { status: 403 }
-      );
-    }
-
-    // ----------------------------------------------------------
-    // 3. Verify the expected message format
-    // ----------------------------------------------------------
-    const expectedMessage = `Connect wallet to OspexBot: ${telegramUserId}`;
-    if (message !== expectedMessage) {
-      return NextResponse.json(
-        { error: "Invalid message format" },
-        { status: 400 }
-      );
-    }
-
-    // ----------------------------------------------------------
-    // 4. Verify wallet signature
-    // ----------------------------------------------------------
-    const signatureValid = verifyWalletSignature(
-      message,
-      signature,
-      walletAddress
-    );
-
-    if (!signatureValid) {
-      return NextResponse.json(
-        { error: "Invalid wallet signature" },
-        { status: 403 }
-      );
-    }
-
-    // ----------------------------------------------------------
-    // 5. Save to Firestore
-    // ----------------------------------------------------------
-    const docRef = db
-      .collection("botUsers")
-      .doc(String(telegramUserId));
-
-    await docRef.set(
-      {
-        walletAddress: walletAddress.toLowerCase(),
-        custody: "self",
-        connectedAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      },
-      { merge: true }
-    );
-
-    console.log(
-      `[connect-wallet] Saved wallet ${walletAddress} for user ${telegramUserId}`
-    );
-
-    return NextResponse.json({ success: true, walletAddress });
   } catch (err) {
     console.error("[connect-wallet] Unexpected error:", err);
     return NextResponse.json(
@@ -217,4 +127,178 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     );
   }
+}
+
+// ============================================================
+// Path A: Telegram initData flow (existing)
+// ============================================================
+
+async function handleInitDataPath(body: {
+  telegramUserId: number;
+  walletAddress: string;
+  signature: string;
+  message: string;
+  initData: string;
+}) {
+  const { telegramUserId, walletAddress, signature, message, initData } = body;
+
+  if (!telegramUserId) {
+    return NextResponse.json(
+      { error: "Missing telegramUserId" },
+      { status: 400 }
+    );
+  }
+
+  // Validate Telegram initData
+  const telegramValidation = validateTelegramInitData(initData);
+  if (!telegramValidation.valid) {
+    return NextResponse.json(
+      { error: "Invalid Telegram authentication" },
+      { status: 403 }
+    );
+  }
+
+  if (
+    telegramValidation.userId &&
+    telegramValidation.userId !== telegramUserId
+  ) {
+    return NextResponse.json(
+      { error: "Telegram user ID mismatch" },
+      { status: 403 }
+    );
+  }
+
+  // Verify expected message format
+  const expectedMessage = `Connect wallet to OspexBot: ${telegramUserId}`;
+  if (message !== expectedMessage) {
+    return NextResponse.json(
+      { error: "Invalid message format" },
+      { status: 400 }
+    );
+  }
+
+  // Verify wallet signature
+  if (!verifyWalletSignature(message, signature, walletAddress)) {
+    return NextResponse.json(
+      { error: "Invalid wallet signature" },
+      { status: 403 }
+    );
+  }
+
+  // Save to Firestore
+  await db
+    .collection("botUsers")
+    .doc(String(telegramUserId))
+    .set(
+      {
+        walletAddress: walletAddress.toLowerCase(),
+        custody: "self",
+        linkMethod: "telegram_miniapp",
+        connectedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+      { merge: true }
+    );
+
+  console.log(
+    `[connect-wallet] Path A: Saved wallet ${walletAddress} for user ${telegramUserId}`
+  );
+
+  return NextResponse.json({ success: true, walletAddress });
+}
+
+// ============================================================
+// Path B: Link token flow (MetaMask browser)
+// ============================================================
+
+async function handleLinkTokenPath(body: {
+  linkToken: string;
+  walletAddress: string;
+  signature: string;
+  message: string;
+}) {
+  const { linkToken, walletAddress, signature, message } = body;
+
+  // 1. Read token from Firestore
+  const tokenDoc = await db.collection("linkTokens").doc(linkToken).get();
+
+  if (!tokenDoc.exists) {
+    return NextResponse.json(
+      { error: "Token not found" },
+      { status: 404 }
+    );
+  }
+
+  const tokenData = tokenDoc.data()!;
+
+  // 2. Check token not used
+  if (tokenData.used) {
+    return NextResponse.json(
+      { error: "Token already used" },
+      { status: 410 }
+    );
+  }
+
+  // 3. Check token not expired
+  const expiresAt = tokenData.expiresAt instanceof Date
+    ? tokenData.expiresAt
+    : tokenData.expiresAt.toDate();
+
+  if (new Date() > expiresAt) {
+    return NextResponse.json(
+      { error: "Token expired" },
+      { status: 410 }
+    );
+  }
+
+  // 4. Reconstruct expected challenge message
+  const expectedMessage = buildChallengeMessage(
+    tokenData.telegramUserId,
+    tokenData.nonce
+  );
+
+  if (message !== expectedMessage) {
+    return NextResponse.json(
+      { error: "Invalid message format — message does not match server challenge" },
+      { status: 400 }
+    );
+  }
+
+  // 5. Verify wallet signature
+  if (!verifyWalletSignature(message, signature, walletAddress)) {
+    return NextResponse.json(
+      { error: "Invalid wallet signature" },
+      { status: 403 }
+    );
+  }
+
+  // 6. Write wallet to botUsers
+  const telegramUserId = tokenData.telegramUserId;
+
+  await db
+    .collection("botUsers")
+    .doc(String(telegramUserId))
+    .set(
+      {
+        walletAddress: walletAddress.toLowerCase(),
+        custody: "self",
+        linkMethod: "metamask_browser",
+        connectedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+      { merge: true }
+    );
+
+  // 7. Mark token as used
+  await db.collection("linkTokens").doc(linkToken).update({
+    used: true,
+    usedAt: new Date().toISOString(),
+    walletAddress: walletAddress.toLowerCase(),
+  });
+
+  console.log(
+    `[connect-wallet] Path B: Saved wallet ${walletAddress} for user ${telegramUserId} (token: ${linkToken})`
+  );
+
+  return NextResponse.json({ success: true, walletAddress });
 }
