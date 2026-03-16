@@ -7,11 +7,13 @@ import { MetaMaskSDK } from "@metamask/sdk";
 // Types
 // ============================================================
 
+type ConnectionMode = "metamask_browser" | "telegram_desktop" | "unknown";
+
 type FlowState =
   | "initializing"
+  | "validating_token"
   | "ready"
   | "connecting"
-  | "awaiting_launch"
   | "connected"
   | "signing"
   | "submitting"
@@ -32,23 +34,6 @@ interface TelegramWebApp {
   close: () => void;
   ready: () => void;
   expand: () => void;
-  MainButton: {
-    text: string;
-    show: () => void;
-    hide: () => void;
-    onClick: (cb: () => void) => void;
-    offClick: (cb: () => void) => void;
-    enable: () => void;
-    disable: () => void;
-    showProgress: (leaveActive?: boolean) => void;
-    hideProgress: () => void;
-    isVisible: boolean;
-    isActive: boolean;
-    color: string;
-    textColor: string;
-    setText: (text: string) => void;
-    setParams: (params: Record<string, unknown>) => void;
-  };
   themeParams: {
     bg_color?: string;
     text_color?: string;
@@ -60,58 +45,18 @@ interface TelegramWebApp {
   };
 }
 
+interface EthereumProvider {
+  isMetaMask?: boolean;
+  request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
+}
+
 declare global {
   interface Window {
     Telegram?: {
       WebApp?: TelegramWebApp;
     };
+    ethereum?: EthereumProvider;
   }
-}
-
-// ============================================================
-// Helpers
-// ============================================================
-
-function isTelegramEnvironment(): boolean {
-  if (typeof window === "undefined") return false;
-  return !!(window.Telegram?.WebApp?.initData);
-}
-
-function normalizeMetaMaskLink(link: string): string {
-  if (link.startsWith("metamask://")) {
-    return `https://metamask.app.link/${link.slice("metamask://".length)}`;
-  }
-  return link;
-}
-
-function toDirectScheme(url: string): string {
-  if (url.startsWith("https://metamask.app.link/")) {
-    return `metamask://${url.slice("https://metamask.app.link/".length)}`;
-  }
-  return url;
-}
-
-/**
- * Module-level callbacks for debug logging and deeplink capture.
- * Uses the same ref-based pattern as the previous onDebugUrl.
- */
-let addLogCallback: ((msg: string) => void) | null = null;
-let onDeeplinkUrl: ((url: string) => void) | null = null;
-
-function addLog(msg: string): void {
-  const ts = new Date().toISOString().slice(11, 19);
-  addLogCallback?.(`[${ts}] ${msg}`);
-}
-
-/**
- * Modified: Instead of immediately navigating, capture the URL
- * and let the user pick a launch strategy.
- */
-function openLinkFromTelegram(url: string): void {
-  const normalized = normalizeMetaMaskLink(url);
-  addLog(`openDeeplink received URL: ${normalized}`);
-  addLog("Pausing for launch strategy selection");
-  onDeeplinkUrl?.(normalized);
 }
 
 // ============================================================
@@ -119,46 +64,28 @@ function openLinkFromTelegram(url: string): void {
 // ============================================================
 
 export default function WalletConnectPage() {
+  const [mode, setMode] = useState<ConnectionMode>("unknown");
   const [flowState, setFlowState] = useState<FlowState>("initializing");
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [challengeMessage, setChallengeMessage] = useState<string | null>(null);
+  const [linkToken, setLinkToken] = useState<string | null>(null);
   const [telegramUserId, setTelegramUserId] = useState<number | null>(null);
   const [theme, setTheme] = useState<TelegramWebApp["themeParams"] | undefined>(undefined);
 
-  const [logs, setLogs] = useState<string[]>([]);
-  const [pendingDeeplinkUrl, setPendingDeeplinkUrl] = useState<string | null>(null);
-
   const sdkRef = useRef<MetaMaskSDK | null>(null);
   const initCalledRef = useRef(false);
-  const logPanelRef = useRef<HTMLDivElement | null>(null);
-
-  // Auto-scroll log panel on new entries
-  useEffect(() => {
-    if (logPanelRef.current) {
-      logPanelRef.current.scrollTop = logPanelRef.current.scrollHeight;
-    }
-  }, [logs]);
 
   // ----------------------------------------------------------
-  // Initialize Telegram + MetaMask SDK + logging
+  // Initialize: detect environment
   // ----------------------------------------------------------
 
   useEffect(() => {
     if (initCalledRef.current) return;
     initCalledRef.current = true;
 
-    // Register callbacks
-    addLogCallback = (msg: string) => setLogs((prev) => [...prev, msg]);
-    onDeeplinkUrl = (url: string) => {
-      setPendingDeeplinkUrl(url);
-      setFlowState("awaiting_launch");
-    };
-
-    // --- Page load diagnostics ---
-    addLog(`userAgent: ${navigator.userAgent}`);
-    addLog(`Telegram.WebApp exists: ${!!window.Telegram?.WebApp}`);
-    addLog(`initData present: ${!!window.Telegram?.WebApp?.initData}`);
-
+    const params = new URLSearchParams(window.location.search);
+    const tokenParam = params.get("linkToken");
     const tg = window.Telegram?.WebApp;
 
     if (tg) {
@@ -167,181 +94,195 @@ export default function WalletConnectPage() {
       setTheme(tg.themeParams);
     }
 
-    const userId = tg?.initDataUnsafe?.user?.id ?? null;
-    setTelegramUserId(userId);
-    addLog(`Telegram user ID: ${userId ?? "none"}`);
+    if (tokenParam) {
+      // ----------------------------------------------------------
+      // Path B: MetaMask browser — opened via deep link with token
+      // ----------------------------------------------------------
+      setMode("metamask_browser");
+      setLinkToken(tokenParam);
+      setFlowState("validating_token");
 
-    if (!userId) {
+      fetch(`/api/link-token?token=${encodeURIComponent(tokenParam)}`)
+        .then(async (res) => {
+          const data = await res.json();
+          if (data.valid) {
+            setChallengeMessage(data.challengeMessage);
+            setFlowState("ready");
+          } else {
+            setErrorMessage(data.error ?? "Invalid link token");
+            setFlowState("error");
+          }
+        })
+        .catch((err) => {
+          setErrorMessage(
+            err instanceof Error ? err.message : "Failed to validate token"
+          );
+          setFlowState("error");
+        });
+    } else if (tg?.initData) {
+      // ----------------------------------------------------------
+      // Path A: Telegram desktop — opened as mini-app
+      // ----------------------------------------------------------
+      setMode("telegram_desktop");
+
+      const userId = tg.initDataUnsafe?.user?.id ?? null;
+      setTelegramUserId(userId);
+
+      if (!userId) {
+        setErrorMessage(
+          "Could not identify Telegram user. Please open this app from the Ospex bot."
+        );
+        setFlowState("error");
+        return;
+      }
+
+      // Initialize MetaMask SDK for desktop Telegram flow
+      const sdk = new MetaMaskSDK({
+        dappMetadata: {
+          name: "Ospex",
+          url: "https://ospex-mini-app.vercel.app",
+        },
+        useDeeplink: true,
+        checkInstallationImmediately: false,
+      });
+
+      sdkRef.current = sdk;
+      setFlowState("ready");
+    } else {
+      // ----------------------------------------------------------
+      // Unknown environment
+      // ----------------------------------------------------------
+      setMode("unknown");
       setErrorMessage(
-        "Could not identify Telegram user. Please open this app from the Ospex bot."
+        "Please open this page from the Ospex Telegram bot, or use the MetaMask browser link provided by the bot."
+      );
+      setFlowState("error");
+    }
+  }, []);
+
+  // ----------------------------------------------------------
+  // MetaMask browser: connect via window.ethereum
+  // ----------------------------------------------------------
+
+  const handleMetaMaskBrowserConnect = useCallback(async () => {
+    if (!window.ethereum) {
+      setErrorMessage(
+        "MetaMask not detected. Please open this page in the MetaMask mobile browser."
       );
       setFlowState("error");
       return;
     }
 
-    // ----------------------------------------------------------
-    // Install window.open safety net BEFORE SDK init
-    // ----------------------------------------------------------
-    let originalOpen: typeof window.open | null = null;
-
-    if (isTelegramEnvironment()) {
-      originalOpen = window.open.bind(window);
-
-      window.open = ((
-        url?: string | URL,
-        target?: string,
-        features?: string
-      ) => {
-        const raw = String(url ?? "");
-        addLog(`window.open intercepted: ${raw.slice(0, 120)}`);
-
-        if (
-          raw.startsWith("metamask://") ||
-          raw.includes("metamask.app.link")
-        ) {
-          openLinkFromTelegram(raw);
-          return null;
-        }
-
-        return originalOpen!(url, target, features);
-      }) as typeof window.open;
-    }
-
-    // ----------------------------------------------------------
-    // Initialize MetaMask SDK with openDeeplink hook
-    // ----------------------------------------------------------
-    const sdk = new MetaMaskSDK({
-      dappMetadata: {
-        name: "Ospex",
-        url: "https://ospex-mini-app.vercel.app",
-      },
-      useDeeplink: true,
-      openDeeplink: (link: string) => {
-        openLinkFromTelegram(link);
-      },
-      checkInstallationImmediately: false,
-    });
-
-    sdkRef.current = sdk;
-    setFlowState("ready");
-    addLog("SDK initialized, ready to connect");
-
-    // ----------------------------------------------------------
-    // Visibility change listener
-    // ----------------------------------------------------------
-    const handleVisibility = () => {
-      if (document.visibilityState === "visible") {
-        addLog("Page visibility: visible — checking SDK state...");
-        const provider = sdk.getProvider();
-        if (provider) {
-          addLog("Provider exists, requesting eth_accounts...");
-          provider
-            .request({ method: "eth_accounts" })
-            .then((accounts) => {
-              addLog(`eth_accounts result: ${JSON.stringify(accounts)}`);
-            })
-            .catch((err: unknown) => {
-              const msg = err instanceof Error ? err.message : String(err);
-              addLog(`eth_accounts error: ${msg}`);
-            });
-        } else {
-          addLog("No provider available after resume");
-        }
-      } else {
-        addLog("Page visibility: hidden");
-      }
-    };
-
-    document.addEventListener("visibilitychange", handleVisibility);
-
-    return () => {
-      if (originalOpen) {
-        window.open = originalOpen;
-      }
-      document.removeEventListener("visibilitychange", handleVisibility);
-      addLogCallback = null;
-      onDeeplinkUrl = null;
-    };
-  }, []);
-
-  // ----------------------------------------------------------
-  // Connect wallet
-  // ----------------------------------------------------------
-
-  const handleConnect = useCallback(async () => {
-    const sdk = sdkRef.current;
-    if (!sdk) return;
-
     setFlowState("connecting");
     setErrorMessage(null);
-    addLog("SDK connect() called");
 
     try {
-      const accounts = (await sdk.connect()) as string[] | undefined;
-
-      addLog(`connect() resolved: ${JSON.stringify(accounts)}`);
+      const accounts = (await window.ethereum.request({
+        method: "eth_requestAccounts",
+      })) as string[];
 
       if (!accounts || accounts.length === 0) {
         throw new Error("No accounts returned from MetaMask");
       }
 
-      const address = accounts[0];
-      setWalletAddress(address);
+      setWalletAddress(accounts[0]);
       setFlowState("connected");
-      addLog(`Connected: ${address}`);
     } catch (err: unknown) {
       const msg =
-        err instanceof Error ? err.message : "Failed to connect MetaMask";
-      const stack = err instanceof Error ? err.stack : undefined;
-      addLog(`connect() error: ${msg}`);
-      if (stack) addLog(`Stack: ${stack}`);
+        err instanceof Error ? err.message : "Failed to connect wallet";
       setErrorMessage(msg);
       setFlowState("error");
     }
   }, []);
 
   // ----------------------------------------------------------
-  // Launch strategy handlers
+  // MetaMask browser: sign challenge + submit
   // ----------------------------------------------------------
 
-  const handleLaunchAppLink = useCallback(() => {
-    if (!pendingDeeplinkUrl) return;
-    const url = normalizeMetaMaskLink(pendingDeeplinkUrl);
-    addLog(`Launching via App Link (openLink): ${url}`);
-    window.Telegram?.WebApp?.openLink(url);
-  }, [pendingDeeplinkUrl]);
-
-  const handleLaunchDirectScheme = useCallback(() => {
-    if (!pendingDeeplinkUrl) return;
-    const url = toDirectScheme(pendingDeeplinkUrl);
-    addLog(`Launching via Direct Scheme (openLink): ${url}`);
-    window.Telegram?.WebApp?.openLink(url);
-  }, [pendingDeeplinkUrl]);
-
-  const handleLaunchLocationHref = useCallback(() => {
-    if (!pendingDeeplinkUrl) return;
-    const url = normalizeMetaMaskLink(pendingDeeplinkUrl);
-    addLog(`Launching via location.href: ${url}`);
-    window.location.href = url;
-  }, [pendingDeeplinkUrl]);
-
-  const handleCopyUrl = useCallback(async () => {
-    if (!pendingDeeplinkUrl) return;
-    addLog(`Copying URL to clipboard: ${pendingDeeplinkUrl}`);
-    try {
-      await navigator.clipboard.writeText(pendingDeeplinkUrl);
-      addLog("Copied to clipboard");
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      addLog(`Clipboard error: ${msg}`);
+  const handleMetaMaskBrowserSign = useCallback(async () => {
+    if (!window.ethereum || !walletAddress || !challengeMessage || !linkToken) {
+      return;
     }
-  }, [pendingDeeplinkUrl]);
+
+    setFlowState("signing");
+    setErrorMessage(null);
+
+    try {
+      const messageHex = `0x${Array.from(
+        new TextEncoder().encode(challengeMessage)
+      )
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("")}`;
+
+      const signature = (await window.ethereum.request({
+        method: "personal_sign",
+        params: [messageHex, walletAddress],
+      })) as string;
+
+      setFlowState("submitting");
+
+      const response = await fetch("/api/connect-wallet", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          linkToken,
+          walletAddress,
+          signature,
+          message: challengeMessage,
+        }),
+      });
+
+      if (!response.ok) {
+        const respBody = await response.json().catch(() => ({}));
+        throw new Error(
+          respBody.error ?? `Server error: ${response.status}`
+        );
+      }
+
+      setFlowState("success");
+    } catch (err: unknown) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : "Failed to sign or submit wallet connection";
+      setErrorMessage(msg);
+      setFlowState("error");
+    }
+  }, [walletAddress, challengeMessage, linkToken]);
 
   // ----------------------------------------------------------
-  // Sign message to prove ownership, then POST to backend
+  // Telegram desktop: connect via MetaMask SDK
   // ----------------------------------------------------------
 
-  const handleSignAndSubmit = useCallback(async () => {
+  const handleTelegramConnect = useCallback(async () => {
+    const sdk = sdkRef.current;
+    if (!sdk) return;
+
+    setFlowState("connecting");
+    setErrorMessage(null);
+
+    try {
+      const accounts = (await sdk.connect()) as string[] | undefined;
+
+      if (!accounts || accounts.length === 0) {
+        throw new Error("No accounts returned from MetaMask");
+      }
+
+      setWalletAddress(accounts[0]);
+      setFlowState("connected");
+    } catch (err: unknown) {
+      const msg =
+        err instanceof Error ? err.message : "Failed to connect MetaMask";
+      setErrorMessage(msg);
+      setFlowState("error");
+    }
+  }, []);
+
+  // ----------------------------------------------------------
+  // Telegram desktop: sign + submit via SDK provider
+  // ----------------------------------------------------------
+
+  const handleTelegramSign = useCallback(async () => {
     const sdk = sdkRef.current;
     if (!sdk || !walletAddress || !telegramUserId) return;
 
@@ -354,15 +295,17 @@ export default function WalletConnectPage() {
       const provider = sdk.getProvider();
       if (!provider) throw new Error("No provider available");
 
+      const messageHex = `0x${Array.from(
+        new TextEncoder().encode(message)
+      )
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("")}`;
+
       const signature = (await provider.request({
         method: "personal_sign",
-        params: [
-          `0x${Buffer.from(message, "utf8").toString("hex")}`,
-          walletAddress,
-        ],
+        params: [messageHex, walletAddress],
       })) as string;
 
-      addLog("Signature obtained");
       setFlowState("submitting");
 
       const initData = window.Telegram?.WebApp?.initData ?? "";
@@ -380,14 +323,13 @@ export default function WalletConnectPage() {
       });
 
       if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
+        const respBody = await response.json().catch(() => ({}));
         throw new Error(
-          body.error ?? `Server error: ${response.status}`
+          respBody.error ?? `Server error: ${response.status}`
         );
       }
 
       setFlowState("success");
-      addLog("Wallet connected successfully");
 
       setTimeout(() => {
         window.Telegram?.WebApp?.close();
@@ -397,7 +339,6 @@ export default function WalletConnectPage() {
         err instanceof Error
           ? err.message
           : "Failed to sign or submit wallet connection";
-      addLog(`Sign/submit error: ${msg}`);
       setErrorMessage(msg);
       setFlowState("error");
     }
@@ -412,9 +353,10 @@ export default function WalletConnectPage() {
     display: "flex",
     flexDirection: "column",
     alignItems: "center",
-    justifyContent: "flex-start",
-    padding: "24px 24px 280px 24px",
-    fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+    justifyContent: "center",
+    padding: "24px",
+    fontFamily:
+      "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
     backgroundColor: theme?.bg_color ?? "#1a1a2e",
     color: theme?.text_color ?? "#e0e0e0",
   };
@@ -441,135 +383,64 @@ export default function WalletConnectPage() {
     marginTop: "16px",
   };
 
-  const launchBtnBase: React.CSSProperties = {
-    width: "100%",
-    padding: "12px 16px",
-    borderRadius: "10px",
-    border: "none",
-    fontSize: "14px",
-    fontWeight: 600,
-    cursor: "pointer",
-    color: "#ffffff",
-    marginTop: "8px",
-    textAlign: "left" as const,
-  };
+  const hintColor = theme?.hint_color ?? "#888";
 
   const truncateAddress = (addr: string) =>
     `${addr.slice(0, 6)}...${addr.slice(-4)}`;
 
+  const handleConnect =
+    mode === "metamask_browser"
+      ? handleMetaMaskBrowserConnect
+      : handleTelegramConnect;
+
+  const handleSign =
+    mode === "metamask_browser"
+      ? handleMetaMaskBrowserSign
+      : handleTelegramSign;
+
   return (
     <div style={containerStyle}>
       <div style={cardStyle}>
-        {/* Header */}
         <h1 style={{ fontSize: "22px", margin: "0 0 8px 0" }}>
           Ospex Wallet
         </h1>
         <p
           style={{
             fontSize: "14px",
-            color: theme?.hint_color ?? "#888",
+            color: hintColor,
             margin: "0 0 24px 0",
           }}
         >
-          Connect your MetaMask wallet to place bets
+          {mode === "metamask_browser"
+            ? "Connect your wallet to link it to your Telegram account"
+            : "Connect your MetaMask wallet to place bets"}
         </p>
 
-        {/* ------- Initializing ------- */}
-        {flowState === "initializing" && (
-          <p style={{ fontSize: "14px" }}>Initializing...</p>
+        {/* Initializing / Validating */}
+        {(flowState === "initializing" || flowState === "validating_token") && (
+          <p style={{ fontSize: "14px" }}>
+            {flowState === "validating_token"
+              ? "Validating link..."
+              : "Initializing..."}
+          </p>
         )}
 
-        {/* ------- Ready: show Connect button ------- */}
+        {/* Ready: Connect button */}
         {flowState === "ready" && (
           <button style={buttonStyle} onClick={handleConnect}>
             Connect MetaMask
           </button>
         )}
 
-        {/* ------- Connecting: waiting for openDeeplink ------- */}
+        {/* Connecting */}
         {flowState === "connecting" && (
-          <>
-            <p style={{ fontSize: "14px" }}>
-              Starting SDK connection...
-            </p>
-            <p
-              style={{
-                fontSize: "12px",
-                color: theme?.hint_color ?? "#888",
-                marginTop: "8px",
-              }}
-            >
-              Waiting for deeplink URL from SDK...
-            </p>
-          </>
+          <p style={{ fontSize: "14px" }}>Connecting to MetaMask...</p>
         )}
 
-        {/* ------- Awaiting Launch: show 4 strategy buttons ------- */}
-        {flowState === "awaiting_launch" && pendingDeeplinkUrl && (
-          <>
-            <p style={{ fontSize: "14px", marginBottom: "4px", fontWeight: 600 }}>
-              Pick a launch strategy:
-            </p>
-            <p
-              style={{
-                fontSize: "11px",
-                color: theme?.hint_color ?? "#888",
-                marginBottom: "12px",
-                wordBreak: "break-all",
-                fontFamily: "monospace",
-              }}
-            >
-              URL: {pendingDeeplinkUrl.slice(0, 80)}...
-            </p>
-
-            <button
-              style={{ ...launchBtnBase, backgroundColor: "#2563eb" }}
-              onClick={handleLaunchAppLink}
-            >
-              App Link
-              <span style={{ display: "block", fontSize: "11px", fontWeight: 400, opacity: 0.8 }}>
-                openLink(https://metamask.app.link/...)
-              </span>
-            </button>
-
-            <button
-              style={{ ...launchBtnBase, backgroundColor: "#d97706" }}
-              onClick={handleLaunchDirectScheme}
-            >
-              Direct Scheme
-              <span style={{ display: "block", fontSize: "11px", fontWeight: 400, opacity: 0.8 }}>
-                openLink(metamask://...)
-              </span>
-            </button>
-
-            <button
-              style={{ ...launchBtnBase, backgroundColor: "#059669" }}
-              onClick={handleLaunchLocationHref}
-            >
-              location.href
-              <span style={{ display: "block", fontSize: "11px", fontWeight: 400, opacity: 0.8 }}>
-                window.location.href = app.link URL
-              </span>
-            </button>
-
-            <button
-              style={{ ...launchBtnBase, backgroundColor: "#6b7280" }}
-              onClick={handleCopyUrl}
-            >
-              Copy URL
-              <span style={{ display: "block", fontSize: "11px", fontWeight: 400, opacity: 0.8 }}>
-                Copy raw SDK URL to clipboard
-              </span>
-            </button>
-          </>
-        )}
-
-        {/* ------- Connected: show address + Sign button ------- */}
+        {/* Connected: show address + Sign button */}
         {flowState === "connected" && walletAddress && (
           <>
-            <p style={{ fontSize: "14px", marginBottom: "4px" }}>
-              Connected
-            </p>
+            <p style={{ fontSize: "14px", marginBottom: "4px" }}>Connected</p>
             <p
               style={{
                 fontSize: "18px",
@@ -583,48 +454,44 @@ export default function WalletConnectPage() {
             <p
               style={{
                 fontSize: "13px",
-                color: theme?.hint_color ?? "#888",
+                color: hintColor,
                 marginBottom: "8px",
               }}
             >
               Sign a message to verify you own this wallet.
             </p>
-            <button style={buttonStyle} onClick={handleSignAndSubmit}>
+            <button style={buttonStyle} onClick={handleSign}>
               Sign &amp; Connect
             </button>
           </>
         )}
 
-        {/* ------- Signing ------- */}
+        {/* Signing */}
         {flowState === "signing" && (
           <>
-            <p style={{ fontSize: "14px" }}>
-              Signing message...
-            </p>
+            <p style={{ fontSize: "14px" }}>Signing message...</p>
             <p
               style={{
                 fontSize: "12px",
-                color: theme?.hint_color ?? "#888",
+                color: hintColor,
                 marginTop: "8px",
               }}
             >
-              Confirm the signature in MetaMask, then return here.
+              Confirm the signature in MetaMask.
             </p>
           </>
         )}
 
-        {/* ------- Submitting ------- */}
+        {/* Submitting */}
         {flowState === "submitting" && (
-          <p style={{ fontSize: "14px" }}>
-            Saving wallet...
-          </p>
+          <p style={{ fontSize: "14px" }}>Saving wallet...</p>
         )}
 
-        {/* ------- Success ------- */}
+        {/* Success */}
         {flowState === "success" && (
           <>
             <p style={{ fontSize: "40px", margin: "0 0 12px 0" }}>
-              ✓
+              &#10003;
             </p>
             <p style={{ fontSize: "16px", fontWeight: 600 }}>
               Wallet connected!
@@ -634,7 +501,7 @@ export default function WalletConnectPage() {
                 style={{
                   fontSize: "14px",
                   fontFamily: "monospace",
-                  color: theme?.hint_color ?? "#888",
+                  color: hintColor,
                   marginTop: "4px",
                 }}
               >
@@ -644,16 +511,18 @@ export default function WalletConnectPage() {
             <p
               style={{
                 fontSize: "13px",
-                color: theme?.hint_color ?? "#888",
+                color: hintColor,
                 marginTop: "12px",
               }}
             >
-              Closing...
+              {mode === "metamask_browser"
+                ? "You can return to Telegram now."
+                : "Closing..."}
             </p>
           </>
         )}
 
-        {/* ------- Error ------- */}
+        {/* Error */}
         {flowState === "error" && (
           <>
             <p
@@ -665,52 +534,18 @@ export default function WalletConnectPage() {
             >
               {errorMessage ?? "Something went wrong."}
             </p>
-            <button
-              style={buttonStyle}
-              onClick={() => {
-                setErrorMessage(null);
-                setFlowState(walletAddress ? "connected" : "ready");
-              }}
-            >
-              Try Again
-            </button>
+            {mode !== "unknown" && (
+              <button
+                style={buttonStyle}
+                onClick={() => {
+                  setErrorMessage(null);
+                  setFlowState(walletAddress ? "connected" : "ready");
+                }}
+              >
+                Try Again
+              </button>
+            )}
           </>
-        )}
-      </div>
-
-      {/* ============================================================ */}
-      {/* Debug Log Panel — fixed at bottom */}
-      {/* ============================================================ */}
-      <div
-        ref={logPanelRef}
-        style={{
-          position: "fixed",
-          bottom: 0,
-          left: 0,
-          right: 0,
-          maxHeight: "40vh",
-          overflowY: "auto",
-          backgroundColor: "#1a1a1a",
-          padding: "8px 10px",
-          fontFamily: "monospace",
-          fontSize: "11px",
-          lineHeight: "1.5",
-          color: "#a0ffa0",
-          borderTop: "1px solid #333",
-          zIndex: 9999,
-        }}
-      >
-        <p style={{ margin: "0 0 4px 0", fontWeight: 600, color: "#fff", fontSize: "12px" }}>
-          DEBUG LOG
-        </p>
-        {logs.length === 0 ? (
-          <p style={{ margin: 0, color: "#666" }}>Waiting for events...</p>
-        ) : (
-          logs.map((entry, i) => (
-            <p key={i} style={{ margin: 0, wordBreak: "break-all" }}>
-              {entry}
-            </p>
-          ))
         )}
       </div>
     </div>
