@@ -53,8 +53,12 @@ export async function authenticateTelegramUser(telegramUserId: string): Promise<
     // Openfort SDK throws APIError with statusCode, errorMessage, and cause.
     const statusCode = (err as { statusCode?: number }).statusCode ?? 0;
     const message = (err as { message?: string }).message ?? '';
-    const errorMessage = (err as { errorMessage?: string }).errorMessage ?? '';
-    const allText = `${message} ${errorMessage}`;
+    const errorMessage = (err as { errorMessage?: unknown }).errorMessage;
+    // errorMessage can be an object like { type, message } — stringify everything
+    const errorMessageStr = typeof errorMessage === 'string'
+      ? errorMessage
+      : JSON.stringify(errorMessage ?? '');
+    const allText = `${message} ${errorMessageStr}`;
 
     if (statusCode === 409 || allText.includes('409') || allText.includes('already exists')) {
       // Extract pla_... from any field in the error
