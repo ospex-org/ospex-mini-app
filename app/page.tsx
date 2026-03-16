@@ -90,12 +90,18 @@ function normalizeMetaMaskLink(link: string): string {
 }
 
 /**
+ * Module-level callback for debug URL capture (temporary — remove after mobile debugging)
+ */
+let onDebugUrl: ((url: string) => void) | null = null;
+
+/**
  * Open a URL from within the Telegram Mini App.
  * Prefers Telegram.WebApp.openLink, falls back to window.location.
  */
 function openLinkFromTelegram(url: string): void {
   const normalized = normalizeMetaMaskLink(url);
   console.log(`[ospex] openLinkFromTelegram: ${normalized}`);
+  onDebugUrl?.(normalized);
 
   if (window.Telegram?.WebApp?.openLink) {
     window.Telegram.WebApp.openLink(normalized);
@@ -115,6 +121,7 @@ export default function WalletConnectPage() {
   const [telegramUserId, setTelegramUserId] = useState<number | null>(null);
 
   const [theme, setTheme] = useState<TelegramWebApp["themeParams"] | undefined>(undefined);
+  const [debugUrl, setDebugUrl] = useState<string | null>(null);
 
   const sdkRef = useRef<MetaMaskSDK | null>(null);
   const initCalledRef = useRef(false);
@@ -126,6 +133,9 @@ export default function WalletConnectPage() {
   useEffect(() => {
     if (initCalledRef.current) return;
     initCalledRef.current = true;
+
+    // Register debug URL callback (temporary)
+    onDebugUrl = (url: string) => setDebugUrl(url);
 
     const tg = window.Telegram?.WebApp;
 
@@ -201,6 +211,7 @@ export default function WalletConnectPage() {
       if (originalOpen) {
         window.open = originalOpen;
       }
+      onDebugUrl = null;
     };
   }, []);
 
@@ -505,6 +516,23 @@ export default function WalletConnectPage() {
           </>
         )}
       </div>
+      {/* Temporary debug panel — remove after mobile debugging */}
+      {debugUrl && (
+        <div style={{
+          marginTop: "16px",
+          padding: "12px",
+          backgroundColor: "#333",
+          borderRadius: "8px",
+          wordBreak: "break-all",
+          fontSize: "11px",
+          fontFamily: "monospace",
+          maxWidth: "360px",
+          width: "100%",
+        }}>
+          <p style={{ margin: "0 0 4px 0", fontWeight: 600 }}>DEBUG - URL sent to MetaMask:</p>
+          <p style={{ margin: 0 }}>{debugUrl}</p>
+        </div>
+      )}
     </div>
   );
 }
