@@ -49,16 +49,22 @@ export async function authenticateTelegramUser(telegramUserId: string): Promise<
     );
     playerId = authResponse.id;
   } catch (err: unknown) {
-    // 409 = player already exists — extract ID and continue
-    const error = err as { status?: number; response?: { data?: { id?: string } }; message?: string };
-    if (error.status === 409 || error.response?.data?.id) {
-      playerId = error.response?.data?.id ?? '';
-      if (!playerId) {
-        // Try to extract pla_... from the error message
-        const match = (error.message ?? '').match(/pla_[a-f0-9-]+/);
-        if (match) playerId = match[0];
+    // 409 = player already exists — extract ID and continue.
+    // Openfort SDK throws APIError with statusCode, errorMessage, and cause.
+    const statusCode = (err as { statusCode?: number }).statusCode ?? 0;
+    const message = (err as { message?: string }).message ?? '';
+    const errorMessage = (err as { errorMessage?: string }).errorMessage ?? '';
+    const allText = `${message} ${errorMessage}`;
+
+    if (statusCode === 409 || allText.includes('409') || allText.includes('already exists')) {
+      // Extract pla_... from any field in the error
+      const match = allText.match(/pla_[a-f0-9-]+/);
+      if (match) {
+        playerId = match[0];
+      } else {
+        console.error('409 conflict but could not extract player ID from error:', allText);
+        throw err;
       }
-      if (!playerId) throw err;
     } else {
       throw err;
     }
