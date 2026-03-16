@@ -68,9 +68,12 @@ export default function WalletSetupPage() {
           setState({ step: 'done', walletAddress: result.walletAddress });
         }
       })
-      .catch((err) => {
+      .catch((err: unknown) => {
         console.error('Setup failed:', err);
-        setState({ step: 'error', message: err.message || 'Something went wrong.' });
+        const message = err instanceof Error ? err.message : String(err);
+        const stack = err instanceof Error ? err.stack : undefined;
+        if (stack) console.error('Stack:', stack);
+        setState({ step: 'error', message });
       });
   }, []);
 
@@ -181,6 +184,7 @@ async function runSetup(initData: string): Promise<{
   existing: boolean;
 }> {
   // Step 1: Authenticate via our backend
+  console.log('[setup] Step 1: Authenticating with backend...');
   const authRes = await fetch('/api/auth/telegram', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -189,10 +193,12 @@ async function runSetup(initData: string): Promise<{
 
   if (!authRes.ok) {
     const err = await authRes.json();
+    console.error('[setup] Auth failed:', authRes.status, err);
     throw new Error(err.error || 'Authentication failed');
   }
 
   const authData = await authRes.json();
+  console.log('[setup] Auth success:', { status: authData.status, playerId: authData.playerId });
 
   // Step 2: Already has wallet
   if (authData.status === 'existing') {
@@ -203,7 +209,7 @@ async function runSetup(initData: string): Promise<{
   }
 
   // Step 3: Create wallet with Openfort JS SDK
-  // Dynamic import to keep it client-side only
+  console.log('[setup] Step 3: Loading Openfort JS SDK...');
   const {
     default: Openfort,
     EmbeddedState,
@@ -211,41 +217,49 @@ async function runSetup(initData: string): Promise<{
     TokenType,
   } = await import('@openfort/openfort-js');
 
+  console.log('[setup] Creating encryption session...');
+  const encryptionSession = await getEncryptionSession();
+
   const openfort = new Openfort({
     baseConfiguration: {
       publishableKey: process.env.NEXT_PUBLIC_OPENFORT_PUBLISHABLE_KEY!,
     },
     shieldConfiguration: {
       shieldPublishableKey: process.env.NEXT_PUBLIC_SHIELD_PUBLISHABLE_KEY!,
-      shieldEncryptionKey: await getEncryptionSession(),
+      shieldEncryptionKey: encryptionSession,
     },
   });
 
-  // Authenticate the Openfort client with the token from our backend
+  console.log('[setup] Calling authenticateWithThirdPartyProvider...');
   await openfort.authenticateWithThirdPartyProvider({
     provider: ThirdPartyOAuthProvider.CUSTOM,
     token: authData.openfortToken,
     tokenType: TokenType.CUSTOM_TOKEN,
   });
+  console.log('[setup] Auth with Openfort SDK complete');
 
-  // Create or recover the embedded wallet
   const embeddedState = openfort.getEmbeddedState();
+  console.log('[setup] Embedded state:', embeddedState);
 
-  // If wallet doesn't exist yet, configure it
   if (embeddedState !== EmbeddedState.READY) {
+    console.log('[setup] Configuring embedded signer...');
     await openfort.configureEmbeddedSigner();
+    console.log('[setup] Embedded signer configured');
   }
 
+  console.log('[setup] Getting wallet address...');
   const accounts = await openfort.getEthereumProvider().request({
     method: 'eth_accounts',
   }) as string[];
   const walletAddress = accounts[0];
+  console.log('[setup] Wallet address:', walletAddress);
 
   if (!walletAddress) {
     throw new Error('Failed to get wallet address');
   }
 
   // Step 4: Save to Firestore
+  console.log('[setup] Step 4: Saving wallet to Firestore...');
   await fetch('/api/save-wallet', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
