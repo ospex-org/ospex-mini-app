@@ -443,13 +443,14 @@ export default function WalletConnectPage() {
             <p style={{ fontSize: "14px", marginBottom: "4px" }}>Connected</p>
             <p
               style={{
-                fontSize: "18px",
+                fontSize: "14px",
                 fontWeight: 600,
                 fontFamily: "monospace",
                 margin: "4px 0 16px 0",
+                wordBreak: "break-all",
               }}
             >
-              {truncateAddress(walletAddress)}
+              {walletAddress}
             </p>
             <p
               style={{

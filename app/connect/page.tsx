@@ -89,12 +89,6 @@ export default function ConnectRedirectPage() {
         <a href={metaMaskLink ?? appUrl} style={buttonStyle}>
           Open in MetaMask
         </a>
-        <a href={appUrl} style={{ ...buttonStyle, backgroundColor: "#0f3460" }}>
-          Continue here
-        </a>
-        <p style={{ fontSize: "12px", color: "#8c8c8c", margin: "16px 0 0 0" }}>
-          If MetaMask is already open, this will continue the wallet connection there.
-        </p>
       </div>
     </div>
   );
