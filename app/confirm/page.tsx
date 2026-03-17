@@ -11,10 +11,12 @@ type FlowState =
   | "validating"
   | "ready"
   | "confirming"
+  | "review"
   | "approving"
   | "submitting"
   | "posting"
   | "success"
+  | "partial_success"
   | "error"
   | "drift";
 
@@ -123,6 +125,8 @@ export default function ConfirmBetPage() {
   const [finalPayout, setFinalPayout] = useState<number | null>(null);
   const [driftInfo, setDriftInfo] = useState<DriftInfo | null>(null);
   const [token, setToken] = useState<string | null>(null);
+  const [preparedPayload, setPreparedPayload] = useState<TxParamsPayload | null>(null);
+  const [needsApproval, setNeedsApproval] = useState(false);
 
   const initCalledRef = useRef(false);
 
@@ -253,17 +257,11 @@ export default function ConfirmBetPage() {
   );
 
   // ----------------------------------------------------------
-  // Confirm bet: get txparams → approve (if needed) → submit → post hash
+  // Helper: fetch quote and check for drift
   // ----------------------------------------------------------
 
-  const handleConfirm = useCallback(async () => {
-    if (!token || !connectedWallet || !window.ethereum) return;
-
-    setFlowState("confirming");
-    setErrorMessage(null);
-
-    try {
-      // 1. Get fresh tx params
+  const fetchQuote = useCallback(
+    async (): Promise<TxParamsPayload | "drift" | null> => {
       const res = await fetch("/api/bet-txparams", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -272,7 +270,6 @@ export default function ConfirmBetPage() {
 
       const data = await res.json();
 
-      // Handle drift exceeded
       if (res.status === 409 && data.driftExceeded) {
         setDriftInfo({
           indicativeOdds: data.indicativeOdds,
@@ -280,19 +277,63 @@ export default function ConfirmBetPage() {
           driftPercent: data.driftPercent,
           maxDriftPercent: data.maxDriftPercent,
         });
-        setFlowState("drift");
-        return;
+        return "drift";
       }
 
       if (!res.ok) {
         throw new Error(data.error ?? `Server error: ${res.status}`);
       }
 
-      const payload = data as TxParamsPayload;
-      setFinalOdds(payload.finalOdds);
-      setFinalPayout(payload.finalPayout);
+      return data as TxParamsPayload;
+    },
+    [token, connectedWallet]
+  );
 
-      // 2. Approve USDC if needed
+  // ----------------------------------------------------------
+  // Step 1: Fetch fresh quote → show review screen with final terms
+  // ----------------------------------------------------------
+
+  const handleRefreshQuote = useCallback(async () => {
+    if (!token || !connectedWallet) return;
+
+    setFlowState("confirming");
+    setErrorMessage(null);
+
+    try {
+      const result = await fetchQuote();
+
+      if (result === "drift") {
+        setFlowState("drift");
+        return;
+      }
+
+      if (!result) {
+        throw new Error("Failed to get quote");
+      }
+
+      setPreparedPayload(result);
+      setFinalOdds(result.finalOdds);
+      setFinalPayout(result.finalPayout);
+      setNeedsApproval(result.needsApproval);
+      setFlowState("review");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to get quote";
+      setErrorMessage(msg);
+      setFlowState("error");
+    }
+  }, [token, connectedWallet, fetchQuote]);
+
+  // ----------------------------------------------------------
+  // Step 2: Submit tx (approve if needed → bet tx → post hash)
+  // ----------------------------------------------------------
+
+  const handleSubmit = useCallback(async () => {
+    if (!token || !connectedWallet || !window.ethereum || !preparedPayload) return;
+
+    let payload = preparedPayload;
+
+    try {
+      // 1. Approve USDC if needed
       if (payload.needsApproval && payload.approveTxParams) {
         setFlowState("approving");
 
@@ -314,28 +355,24 @@ export default function ConfirmBetPage() {
         }
 
         // Re-fetch fresh tx params after approval (quote may have expired)
-        const freshRes = await fetch("/api/bet-txparams", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token, walletAddress: connectedWallet }),
-        });
+        const freshResult = await fetchQuote();
 
-        const freshData = await freshRes.json();
-        if (!freshRes.ok) {
-          throw new Error(
-            freshData.error ?? `Server error: ${freshRes.status}`
-          );
+        if (freshResult === "drift") {
+          setFlowState("drift");
+          return;
         }
 
-        const freshPayload = freshData as TxParamsPayload;
-        setFinalOdds(freshPayload.finalOdds);
-        setFinalPayout(freshPayload.finalPayout);
+        if (!freshResult) {
+          throw new Error("Failed to refresh quote after approval");
+        }
 
-        // Use fresh params for the bet tx
-        Object.assign(payload, freshPayload);
+        payload = freshResult;
+        setPreparedPayload(payload);
+        setFinalOdds(payload.finalOdds);
+        setFinalPayout(payload.finalPayout);
       }
 
-      // 3. Submit bet transaction
+      // 2. Submit bet transaction
       setFlowState("submitting");
 
       const betTxHash = (await window.ethereum.request({
@@ -355,7 +392,7 @@ export default function ConfirmBetPage() {
         throw new Error("Bet transaction reverted on-chain");
       }
 
-      // 4. Post tx hash back to server
+      // 3. Post tx hash back to server
       setFlowState("posting");
       setTxHash(betTxHash);
 
@@ -366,18 +403,18 @@ export default function ConfirmBetPage() {
       });
 
       if (!confirmRes.ok) {
-        // Tx succeeded on-chain but server recording failed — still show success
         console.error(
           "[confirm] Failed to record txHash:",
           await confirmRes.text()
         );
+        setFlowState("partial_success");
+        return;
       }
 
       setFlowState("success");
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Transaction failed";
 
-      // Detect user rejection
       if (
         msg.includes("User denied") ||
         msg.includes("user rejected") ||
@@ -389,7 +426,7 @@ export default function ConfirmBetPage() {
       }
       setFlowState("error");
     }
-  }, [token, connectedWallet, waitForReceipt]);
+  }, [token, connectedWallet, preparedPayload, waitForReceipt, fetchQuote]);
 
   // ----------------------------------------------------------
   // Render
@@ -554,6 +591,57 @@ export default function ConfirmBetPage() {
     );
   }
 
+  // ── Partial success (tx on-chain but server sync failed) ──
+  if (flowState === "partial_success" && bet) {
+    return (
+      <div style={containerStyle}>
+        <div style={{ ...cardStyle, textAlign: "center" }}>
+          <p style={{ fontSize: "40px", margin: "0 0 12px 0" }}>&#9888;</p>
+          <h2 style={{ fontSize: "18px", margin: "0 0 8px 0" }}>
+            Transaction Succeeded
+          </h2>
+          <p
+            style={{
+              fontSize: "14px",
+              color: "#f0ad4e",
+              margin: "0 0 16px 0",
+            }}
+          >
+            Your bet was placed on-chain, but we couldn&apos;t sync it back to
+            OspexBot. The bot may not send a confirmation message.
+          </p>
+          {txHash && (
+            <a
+              href={`https://polygonscan.com/tx/${txHash}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: "block",
+                fontSize: "13px",
+                color: "var(--tg-theme-link-color, #5dade2)",
+                marginTop: "8px",
+                wordBreak: "break-all",
+              }}
+            >
+              View on Polygonscan
+            </a>
+          )}
+          <a
+            href="https://t.me/OspexBot"
+            style={{
+              ...buttonStyle,
+              display: "block",
+              textDecoration: "none",
+              textAlign: "center",
+            }}
+          >
+            Return to Telegram
+          </a>
+        </div>
+      </div>
+    );
+  }
+
   // ── Success ──
   if (flowState === "success" && bet) {
     return (
@@ -653,6 +741,86 @@ export default function ConfirmBetPage() {
     );
   }
 
+  // ── Review: show final executable terms + submit button ──
+  if (flowState === "review" && bet && preparedPayload) {
+    return (
+      <div style={containerStyle}>
+        <div style={cardStyle}>
+          <h2
+            style={{ fontSize: "18px", margin: "0 0 4px 0", textAlign: "center" }}
+          >
+            {bet.awayTeam} @ {bet.homeTeam}
+          </h2>
+          <p
+            style={{
+              fontSize: "13px",
+              color: hintColor,
+              margin: "0 0 20px 0",
+              textAlign: "center",
+            }}
+          >
+            Final terms — review before submitting
+          </p>
+
+          <div style={detailRowStyle}>
+            <span style={{ color: hintColor }}>Market</span>
+            <span>{formatMarket(bet)}</span>
+          </div>
+          <div style={detailRowStyle}>
+            <span style={{ color: hintColor }}>Your pick</span>
+            <span style={{ fontWeight: 600 }}>{formatSide(bet)}</span>
+          </div>
+          <div style={detailRowStyle}>
+            <span style={{ color: hintColor }}>Stake</span>
+            <span>{bet.stake.toFixed(2)} USDC</span>
+          </div>
+          <div style={detailRowStyle}>
+            <span style={{ color: hintColor }}>Final odds</span>
+            <span style={{ fontWeight: 600 }}>
+              {formatOdds(finalOdds)}
+              {finalOdds != null && (
+                <span style={{ color: hintColor, fontSize: "12px" }}>
+                  {" "}
+                  ({finalOdds.toFixed(2)})
+                </span>
+              )}
+            </span>
+          </div>
+          <div style={{ ...detailRowStyle, borderBottom: "none" }}>
+            <span style={{ color: hintColor }}>Payout</span>
+            <span style={{ fontWeight: 600 }}>
+              {finalPayout?.toFixed(2) ?? "—"} USDC
+            </span>
+          </div>
+
+          {needsApproval && (
+            <p
+              style={{
+                fontSize: "12px",
+                color: "#f0ad4e",
+                textAlign: "center",
+                margin: "12px 0 0 0",
+              }}
+            >
+              USDC approval required — you&apos;ll confirm two transactions.
+            </p>
+          )}
+
+          <button style={buttonStyle} onClick={handleSubmit}>
+            Submit in MetaMask
+          </button>
+
+          <button
+            style={secondaryButtonStyle}
+            onClick={() => setFlowState("ready")}
+          >
+            Back
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   // ── Ready: show bet details + confirm button ──
   if (flowState === "ready" && bet) {
     const estimatedPayout =
@@ -710,8 +878,8 @@ export default function ConfirmBetPage() {
             </div>
           )}
 
-          <button style={buttonStyle} onClick={handleConfirm}>
-            Confirm Bet
+          <button style={buttonStyle} onClick={handleRefreshQuote}>
+            Review Final Terms
           </button>
 
           <p
@@ -722,7 +890,7 @@ export default function ConfirmBetPage() {
               margin: "12px 0 0 0",
             }}
           >
-            Odds are refreshed at confirm time. Final odds may differ.
+            Fetches a fresh quote so you can review final odds before submitting.
           </p>
         </div>
       </div>
