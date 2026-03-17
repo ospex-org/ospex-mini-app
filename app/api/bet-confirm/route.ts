@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { initializeApp, getApps, cert } from "firebase-admin/app";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
+import { ethers } from "ethers";
 
 // Firebase Admin init (singleton)
 if (getApps().length === 0) {
@@ -214,7 +215,52 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 2. Atomic update: mark token used + update pending bet
+    // 2. Verify the transaction on-chain
+    const rpcUrl = process.env.POLYGON_RPC_URL;
+    const positionModuleAddress = process.env.POSITION_MODULE_ADDRESS;
+    if (!rpcUrl || !positionModuleAddress) {
+      console.error("[bet-confirm POST] Missing POLYGON_RPC_URL or POSITION_MODULE_ADDRESS");
+      return NextResponse.json(
+        { success: false, error: "Server misconfigured" },
+        { status: 500 }
+      );
+    }
+
+    const provider = new ethers.JsonRpcProvider(rpcUrl);
+    const receipt = await provider.getTransactionReceipt(txHash);
+
+    if (!receipt) {
+      return NextResponse.json(
+        { success: false, error: "Transaction not found on-chain. It may still be pending — wait for confirmation and retry." },
+        { status: 404 }
+      );
+    }
+
+    // Verify sender matches the wallet linked to this token
+    if (receipt.from.toLowerCase() !== tokenData!.walletAddress.toLowerCase()) {
+      return NextResponse.json(
+        { success: false, error: "Transaction sender does not match linked wallet" },
+        { status: 400 }
+      );
+    }
+
+    // Verify the tx targeted the PositionModule contract
+    if (!receipt.to || receipt.to.toLowerCase() !== positionModuleAddress.toLowerCase()) {
+      return NextResponse.json(
+        { success: false, error: "Transaction target is not the expected contract" },
+        { status: 400 }
+      );
+    }
+
+    // Verify the tx succeeded (status 1 = success)
+    if (receipt.status !== 1) {
+      return NextResponse.json(
+        { success: false, error: "Transaction reverted on-chain" },
+        { status: 422 }
+      );
+    }
+
+    // 3. Atomic update: mark token used + update pending bet
     const betRef = db.collection("pendingBets").doc(tokenData!.pendingBetId);
 
     await db.runTransaction(async (tx) => {
@@ -234,7 +280,7 @@ export async function POST(request: NextRequest) {
       // Mark token as used
       tx.update(tokenRef, { used: true, usedAt: FieldValue.serverTimestamp() });
 
-      // Update pending bet
+      // Update pending bet — verified on-chain
       tx.update(betRef, {
         status: "submitted",
         txHash,
