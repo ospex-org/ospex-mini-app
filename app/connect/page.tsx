@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useState } from "react";
 
 function buildMetaMaskLink(linkToken: string) {
   const dappUrl = `https://ospex-mini-app.vercel.app?linkToken=${encodeURIComponent(linkToken)}`;
@@ -8,20 +8,28 @@ function buildMetaMaskLink(linkToken: string) {
 }
 
 export default function ConnectRedirectPage() {
-  const searchParams = useMemo(() => new URLSearchParams(window.location.search), []);
-  const linkToken = searchParams.get("linkToken") ?? "";
-  const appUrl = linkToken
-    ? `https://ospex-mini-app.vercel.app?linkToken=${encodeURIComponent(linkToken)}`
-    : "https://ospex-mini-app.vercel.app";
-  const metaMaskLink = linkToken ? buildMetaMaskLink(linkToken) : null;
+  const [linkToken, setLinkToken] = useState("");
 
   useEffect(() => {
-    if (!linkToken) return;
+    if (typeof window === "undefined") return;
+
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get("linkToken") ?? "";
+    setLinkToken(token);
+
+    if (!token) return;
+
+    const appUrl = `https://ospex-mini-app.vercel.app?linkToken=${encodeURIComponent(token)}`;
 
     if (window.ethereum?.isMetaMask) {
       window.location.replace(appUrl);
     }
-  }, [appUrl, linkToken]);
+  }, []);
+
+  const appUrl = linkToken
+    ? `https://ospex-mini-app.vercel.app?linkToken=${encodeURIComponent(linkToken)}`
+    : "https://ospex-mini-app.vercel.app";
+  const metaMaskLink = linkToken ? buildMetaMaskLink(linkToken) : null;
 
   const containerStyle: React.CSSProperties = {
     minHeight: "100vh",
