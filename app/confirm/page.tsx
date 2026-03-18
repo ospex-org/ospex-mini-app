@@ -19,7 +19,8 @@ type FlowState =
   | "success"
   | "partial_success"
   | "error"
-  | "drift";
+  | "drift"
+  | "cancelled";
 
 interface BetDetails {
   contestId: number;
@@ -818,10 +819,26 @@ export default function ConfirmBetPage() {
 
           <button
             style={secondaryButtonStyle}
-            onClick={() => setFlowState("ready")}
+            onClick={() => setFlowState("cancelled")}
           >
             Cancel
           </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Cancelled ──
+  if (flowState === "cancelled") {
+    return (
+      <div style={containerStyle}>
+        <div style={{ ...cardStyle, textAlign: "center" }}>
+          <p style={{ fontSize: "16px", fontWeight: 600, margin: "0 0 8px 0" }}>
+            Bet cancelled
+          </p>
+          <p style={{ fontSize: "14px", color: hintColor, margin: 0 }}>
+            You can close this page and start a new bet in Telegram.
+          </p>
         </div>
       </div>
     );
