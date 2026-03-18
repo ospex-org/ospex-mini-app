@@ -10,6 +10,7 @@ type FlowState =
   | "loading"
   | "validating"
   | "ready"
+  | "no_metamask"
   | "confirming"
   | "review"
   | "approving"
@@ -176,10 +177,7 @@ export default function ConfirmBetPage() {
     if (flowState !== "ready" || !expectedWallet) return;
 
     if (!window.ethereum) {
-      setErrorMessage(
-        "MetaMask not detected. Please open this page in the MetaMask mobile browser."
-      );
-      setFlowState("error");
+      setFlowState("no_metamask");
       return;
     }
 
@@ -522,6 +520,46 @@ export default function ConfirmBetPage() {
               Try Again
             </button>
           )}
+          <a
+            href="https://t.me/OspexBot"
+            style={{
+              ...secondaryButtonStyle,
+              display: "block",
+              textDecoration: "none",
+              textAlign: "center",
+            }}
+          >
+            Return to Telegram
+          </a>
+        </div>
+      </div>
+    );
+  }
+
+  // ── No MetaMask: redirect via deep link ──
+  if (flowState === "no_metamask" && token) {
+    const confirmUrl = `https://ospex-mini-app.vercel.app/confirm?token=${encodeURIComponent(token)}`;
+    const metaMaskLink = `https://link.metamask.io/dapp/${encodeURIComponent(confirmUrl)}`;
+
+    return (
+      <div style={containerStyle}>
+        <div style={{ ...cardStyle, textAlign: "center" }}>
+          <h1 style={{ fontSize: "22px", margin: "0 0 8px 0" }}>Open MetaMask</h1>
+          <p style={{ fontSize: "14px", color: hintColor, margin: "0 0 12px 0" }}>
+            MetaMask isn&apos;t available in this browser. Tap below to open in
+            MetaMask&apos;s built-in browser.
+          </p>
+          <a
+            href={metaMaskLink}
+            style={{
+              ...buttonStyle,
+              display: "block",
+              textDecoration: "none",
+              textAlign: "center",
+            }}
+          >
+            Open in MetaMask
+          </a>
           <a
             href="https://t.me/OspexBot"
             style={{
