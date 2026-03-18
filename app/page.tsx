@@ -71,7 +71,6 @@ export default function WalletConnectPage() {
   const [challengeMessage, setChallengeMessage] = useState<string | null>(null);
   const [linkToken, setLinkToken] = useState<string | null>(null);
   const [telegramUserId, setTelegramUserId] = useState<number | null>(null);
-  const [theme, setTheme] = useState<TelegramWebApp["themeParams"] | undefined>(undefined);
 
   const sdkRef = useRef<MetaMaskSDK | null>(null);
   const initCalledRef = useRef(false);
@@ -91,7 +90,6 @@ export default function WalletConnectPage() {
     if (tg) {
       tg.ready();
       tg.expand();
-      setTheme(tg.themeParams);
     }
 
     if (tokenParam) {
@@ -355,35 +353,35 @@ export default function WalletConnectPage() {
     alignItems: "center",
     justifyContent: "center",
     padding: "24px",
-    fontFamily:
-      "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-    backgroundColor: theme?.bg_color ?? "#1a1a2e",
-    color: theme?.text_color ?? "#e0e0e0",
+    fontFamily: "'Atkinson Hyperlegible', system-ui, sans-serif",
+    backgroundColor: "#0a0a0a",
+    color: "#f2f2f2",
   };
 
   const cardStyle: React.CSSProperties = {
     width: "100%",
     maxWidth: "360px",
-    backgroundColor: theme?.secondary_bg_color ?? "#16213e",
-    borderRadius: "16px",
+    backgroundColor: "#141414",
+    borderRadius: "12px",
     padding: "32px 24px",
     textAlign: "center",
   };
 
   const buttonStyle: React.CSSProperties = {
     width: "100%",
+    boxSizing: "border-box",
     padding: "14px 24px",
     borderRadius: "12px",
     border: "none",
     fontSize: "16px",
     fontWeight: 600,
     cursor: "pointer",
-    backgroundColor: theme?.button_color ?? "#e94560",
-    color: theme?.button_text_color ?? "#ffffff",
+    backgroundColor: "#e94560",
+    color: "#ffffff",
     marginTop: "16px",
   };
 
-  const hintColor = theme?.hint_color ?? "#888";
+  const hintColor = "#8c8c8c";
 
   const truncateAddress = (addr: string) =>
     `${addr.slice(0, 6)}...${addr.slice(-4)}`;
