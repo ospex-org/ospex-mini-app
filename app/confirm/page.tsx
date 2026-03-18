@@ -19,7 +19,8 @@ type FlowState =
   | "success"
   | "partial_success"
   | "error"
-  | "drift";
+  | "drift"
+  | "cancelled";
 
 interface BetDetails {
   contestId: number;
@@ -102,8 +103,8 @@ function formatMatchTime(iso: string): string {
       day: "numeric",
       hour: "numeric",
       minute: "2-digit",
-      timeZoneName: "short",
-    });
+      timeZone: "America/New_York",
+    }) + " ET";
   } catch {
     return iso;
   }
@@ -231,6 +232,16 @@ export default function ConfirmBetPage() {
       }
     })();
   }, [flowState, expectedWallet]);
+
+  // ----------------------------------------------------------
+  // Auto-fetch quote after wallet connects successfully
+  // ----------------------------------------------------------
+
+  useEffect(() => {
+    if (flowState !== "ready" || !connectedWallet || !token) return;
+    handleRefreshQuote();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flowState, connectedWallet, token]);
 
   // ----------------------------------------------------------
   // Wait for tx confirmation (poll receipt)
@@ -437,41 +448,41 @@ export default function ConfirmBetPage() {
     alignItems: "center",
     justifyContent: "center",
     padding: "24px",
-    fontFamily:
-      "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-    backgroundColor: "var(--tg-theme-bg-color, #1a1a2e)",
-    color: "var(--tg-theme-text-color, #e0e0e0)",
+    fontFamily: "'Atkinson Hyperlegible', system-ui, sans-serif",
+    backgroundColor: "#0a0a0a",
+    color: "#f2f2f2",
   };
 
   const cardStyle: React.CSSProperties = {
     width: "100%",
     maxWidth: "360px",
-    backgroundColor: "var(--tg-theme-secondary-bg-color, #16213e)",
-    borderRadius: "16px",
+    backgroundColor: "#141414",
+    borderRadius: "12px",
     padding: "32px 24px",
   };
 
   const buttonStyle: React.CSSProperties = {
     width: "100%",
+    boxSizing: "border-box",
     padding: "14px 24px",
     borderRadius: "12px",
     border: "none",
     fontSize: "16px",
     fontWeight: 600,
     cursor: "pointer",
-    backgroundColor: "var(--tg-theme-button-color, #e94560)",
-    color: "var(--tg-theme-button-text-color, #ffffff)",
+    backgroundColor: "#e94560",
+    color: "#ffffff",
     marginTop: "16px",
   };
 
   const secondaryButtonStyle: React.CSSProperties = {
     ...buttonStyle,
     backgroundColor: "transparent",
-    border: "1px solid var(--tg-theme-hint-color, #666)",
-    color: "var(--tg-theme-hint-color, #aaa)",
+    border: "1px solid #2e2e2e",
+    color: "#8c8c8c",
   };
 
-  const hintColor = "var(--tg-theme-hint-color, #888)";
+  const hintColor = "#8c8c8c";
 
   const detailRowStyle: React.CSSProperties = {
     display: "flex",
@@ -520,17 +531,6 @@ export default function ConfirmBetPage() {
               Try Again
             </button>
           )}
-          <a
-            href="https://t.me/OspexBot"
-            style={{
-              ...secondaryButtonStyle,
-              display: "block",
-              textDecoration: "none",
-              textAlign: "center",
-            }}
-          >
-            Return to Telegram
-          </a>
         </div>
       </div>
     );
@@ -559,17 +559,6 @@ export default function ConfirmBetPage() {
             }}
           >
             Open in MetaMask
-          </a>
-          <a
-            href="https://t.me/OspexBot"
-            style={{
-              ...secondaryButtonStyle,
-              display: "block",
-              textDecoration: "none",
-              textAlign: "center",
-            }}
-          >
-            Return to Telegram
           </a>
         </div>
       </div>
@@ -613,17 +602,6 @@ export default function ConfirmBetPage() {
             The odds moved beyond your drift limit. Start a new bet in Telegram
             if you&apos;d like to proceed at the new odds.
           </p>
-          <a
-            href="https://t.me/OspexBot"
-            style={{
-              ...buttonStyle,
-              display: "block",
-              textDecoration: "none",
-              textAlign: "center",
-            }}
-          >
-            Return to Telegram
-          </a>
         </div>
       </div>
     );
@@ -656,7 +634,7 @@ export default function ConfirmBetPage() {
               style={{
                 display: "block",
                 fontSize: "13px",
-                color: "var(--tg-theme-link-color, #5dade2)",
+                color: "#5dade2",
                 marginTop: "8px",
                 wordBreak: "break-all",
               }}
@@ -664,17 +642,6 @@ export default function ConfirmBetPage() {
               View on Polygonscan
             </a>
           )}
-          <a
-            href="https://t.me/OspexBot"
-            style={{
-              ...buttonStyle,
-              display: "block",
-              textDecoration: "none",
-              textAlign: "center",
-            }}
-          >
-            Return to Telegram
-          </a>
         </div>
       </div>
     );
@@ -725,7 +692,7 @@ export default function ConfirmBetPage() {
               style={{
                 display: "block",
                 fontSize: "13px",
-                color: "var(--tg-theme-link-color, #5dade2)",
+                color: "#5dade2",
                 marginTop: "16px",
                 wordBreak: "break-all",
               }}
@@ -733,17 +700,6 @@ export default function ConfirmBetPage() {
               View on Polygonscan
             </a>
           )}
-          <a
-            href="https://t.me/OspexBot"
-            style={{
-              ...buttonStyle,
-              display: "block",
-              textDecoration: "none",
-              textAlign: "center",
-            }}
-          >
-            Return to Telegram
-          </a>
         </div>
       </div>
     );
@@ -797,8 +753,21 @@ export default function ConfirmBetPage() {
               textAlign: "center",
             }}
           >
-            Final terms — review before submitting
+            {formatMatchTime(bet.matchTime)}
           </p>
+
+          {bet.indicativeOdds != null && finalOdds != null && Math.abs(finalOdds - bet.indicativeOdds) >= 0.01 && (
+            <p
+              style={{
+                fontSize: "13px",
+                color: "#e3a820",
+                textAlign: "center",
+                margin: "0 0 16px 0",
+              }}
+            >
+              Odds moved from {formatOdds(bet.indicativeOdds)} to {formatOdds(finalOdds)}
+            </p>
+          )}
 
           <div style={detailRowStyle}>
             <span style={{ color: hintColor }}>Market</span>
@@ -845,90 +814,43 @@ export default function ConfirmBetPage() {
           )}
 
           <button style={buttonStyle} onClick={handleSubmit}>
-            Submit in MetaMask
+            Confirm Bet
           </button>
 
           <button
             style={secondaryButtonStyle}
-            onClick={() => setFlowState("ready")}
+            onClick={() => setFlowState("cancelled")}
           >
-            Back
+            Cancel
           </button>
         </div>
       </div>
     );
   }
 
-  // ── Ready: show bet details + confirm button ──
-  if (flowState === "ready" && bet) {
-    const estimatedPayout =
-      bet.indicativeOdds != null
-        ? (bet.stake * bet.indicativeOdds).toFixed(2)
-        : null;
-
+  // ── Cancelled ──
+  if (flowState === "cancelled") {
     return (
       <div style={containerStyle}>
-        <div style={cardStyle}>
-          <h2
-            style={{ fontSize: "18px", margin: "0 0 4px 0", textAlign: "center" }}
-          >
-            {bet.awayTeam} @ {bet.homeTeam}
-          </h2>
-          <p
-            style={{
-              fontSize: "13px",
-              color: hintColor,
-              margin: "0 0 20px 0",
-              textAlign: "center",
-            }}
-          >
-            {formatMatchTime(bet.matchTime)}
+        <div style={{ ...cardStyle, textAlign: "center" }}>
+          <p style={{ fontSize: "16px", fontWeight: 600, margin: "0 0 8px 0" }}>
+            Bet cancelled
           </p>
+          <p style={{ fontSize: "14px", color: hintColor, margin: 0 }}>
+            You can close this page and start a new bet in Telegram.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
-          <div style={detailRowStyle}>
-            <span style={{ color: hintColor }}>Market</span>
-            <span>{formatMarket(bet)}</span>
-          </div>
-          <div style={detailRowStyle}>
-            <span style={{ color: hintColor }}>Your pick</span>
-            <span style={{ fontWeight: 600 }}>{formatSide(bet)}</span>
-          </div>
-          <div style={detailRowStyle}>
-            <span style={{ color: hintColor }}>Stake</span>
-            <span>{bet.stake.toFixed(2)} USDC</span>
-          </div>
-          <div style={detailRowStyle}>
-            <span style={{ color: hintColor }}>Est. odds</span>
-            <span>
-              {formatOdds(bet.indicativeOdds)}
-              {bet.indicativeOdds != null && (
-                <span style={{ color: hintColor, fontSize: "12px" }}>
-                  {" "}
-                  ({bet.indicativeOdds.toFixed(2)})
-                </span>
-              )}
-            </span>
-          </div>
-          {estimatedPayout && (
-            <div style={{ ...detailRowStyle, borderBottom: "none" }}>
-              <span style={{ color: hintColor }}>Est. payout</span>
-              <span style={{ fontWeight: 600 }}>{estimatedPayout} USDC</span>
-            </div>
-          )}
-
-          <button style={buttonStyle} onClick={handleRefreshQuote}>
-            Review Final Terms
-          </button>
-
-          <p
-            style={{
-              fontSize: "12px",
-              color: hintColor,
-              textAlign: "center",
-              margin: "12px 0 0 0",
-            }}
-          >
-            Fetches a fresh quote so you can review final odds before submitting.
+  // ── Ready: wallet connected, auto-fetching quote ──
+  if (flowState === "ready" && bet) {
+    return (
+      <div style={containerStyle}>
+        <div style={{ ...cardStyle, textAlign: "center" }}>
+          <p style={{ fontSize: "14px" }}>
+            {connectedWallet ? "Getting fresh quote..." : "Connecting wallet..."}
           </p>
         </div>
       </div>

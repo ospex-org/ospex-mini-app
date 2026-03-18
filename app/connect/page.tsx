@@ -37,16 +37,16 @@ export default function ConnectRedirectPage() {
     alignItems: "center",
     justifyContent: "center",
     padding: "24px",
-    fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-    backgroundColor: "#1a1a2e",
-    color: "#e0e0e0",
+    fontFamily: "'Atkinson Hyperlegible', system-ui, sans-serif",
+    backgroundColor: "#0a0a0a",
+    color: "#f2f2f2",
   };
 
   const cardStyle: React.CSSProperties = {
     width: "100%",
     maxWidth: "360px",
-    backgroundColor: "#16213e",
-    borderRadius: "16px",
+    backgroundColor: "#141414",
+    borderRadius: "12px",
     padding: "32px 24px",
     textAlign: "center",
   };
@@ -71,7 +71,7 @@ export default function ConnectRedirectPage() {
       <div style={containerStyle}>
         <div style={cardStyle}>
           <h1 style={{ fontSize: "22px", margin: "0 0 12px 0" }}>Ospex Wallet</h1>
-          <p style={{ fontSize: "14px", color: "#b0b0b0", margin: 0 }}>
+          <p style={{ fontSize: "14px", color: "#8c8c8c", margin: 0 }}>
             Missing link token. Go back to Telegram and try again.
           </p>
         </div>
@@ -83,7 +83,7 @@ export default function ConnectRedirectPage() {
     <div style={containerStyle}>
       <div style={cardStyle}>
         <h1 style={{ fontSize: "22px", margin: "0 0 8px 0" }}>Open MetaMask</h1>
-        <p style={{ fontSize: "14px", color: "#b0b0b0", margin: "0 0 12px 0" }}>
+        <p style={{ fontSize: "14px", color: "#8c8c8c", margin: "0 0 12px 0" }}>
           If Telegram opened this page in-app, use the button below to jump into MetaMask's browser.
         </p>
         <a href={metaMaskLink ?? appUrl} style={buttonStyle}>

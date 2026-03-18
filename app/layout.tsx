@@ -15,13 +15,21 @@ export default function RootLayout({
       <head>
         {/* Telegram Web Apps SDK - must be loaded before the app */}
         <script src="https://telegram.org/js/telegram-web-app.js" />
+        <link
+          href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap"
+          rel="stylesheet"
+        />
+        <style dangerouslySetInnerHTML={{ __html: `
+          *, *::before, *::after { box-sizing: border-box; }
+          button, a { max-width: 100%; }
+        ` }} />
       </head>
       <body style={{
         margin: 0,
         padding: '16px',
-        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-        backgroundColor: 'var(--tg-theme-bg-color, #1a1a2e)',
-        color: 'var(--tg-theme-text-color, #ffffff)',
+        fontFamily: "'Atkinson Hyperlegible', system-ui, sans-serif",
+        backgroundColor: '#0a0a0a',
+        color: '#f2f2f2',
         minHeight: '100vh',
       }}>
         {children}
