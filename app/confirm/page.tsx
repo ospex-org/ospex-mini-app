@@ -142,6 +142,7 @@ export default function ConfirmBetPage() {
   const [needsApproval, setNeedsApproval] = useState(false);
   const [positionId, setPositionId] = useState<string | null>(null);
   const [wasMatched, setWasMatched] = useState(false);
+  const [failureReason, setFailureReason] = useState<"confirm" | "match" | null>(null);
 
   const initCalledRef = useRef(false);
 
@@ -435,6 +436,7 @@ export default function ConfirmBetPage() {
         console.error("[confirm] Failed to record txHash:", errBody);
         logToServer("bet-confirm-post", `HTTP ${confirmRes.status}`, errBody);
         // Position is on-chain but server didn't confirm — show partial_success
+        setFailureReason("confirm");
         setFlowState("partial_success");
         return;
       }
@@ -468,6 +470,7 @@ export default function ConfirmBetPage() {
           console.error("[confirm] Match endpoint error:", matchRes.status, errBody);
           logToServer("bet-match-http", `HTTP ${matchRes.status}`, errBody);
           // Position is on-chain but not matched — show partial success
+          setFailureReason("match");
           setFlowState("partial_success");
           return;
         }
@@ -476,6 +479,7 @@ export default function ConfirmBetPage() {
         const matchMsg = matchErr instanceof Error ? matchErr.message : String(matchErr);
         console.error("[confirm] Match step failed:", matchErr);
         logToServer("bet-match", matchMsg);
+        setFailureReason("match");
         setFlowState("partial_success");
         return;
       }
@@ -668,7 +672,7 @@ export default function ConfirmBetPage() {
     );
   }
 
-  // ── Partial success (tx on-chain but server sync failed) ──
+  // ── Partial success (tx on-chain but server sync or match failed) ──
   if (flowState === "partial_success" && bet) {
     return (
       <div style={containerStyle}>
@@ -684,9 +688,26 @@ export default function ConfirmBetPage() {
               margin: "0 0 16px 0",
             }}
           >
-            Your bet was placed on-chain, but we couldn&apos;t sync it back to
-            OspexBot. The bot may not send a confirmation message.
+            {failureReason === "match"
+              ? "Your position was created on-chain but matching failed. Your position is on the orderbook and may be matched later."
+              : "Your transaction went through on-chain but we couldn\u2019t record it. Check your positions at ospex.org or contact support."}
           </p>
+          {failureReason === "match" && positionId && (
+            <a
+              href={`https://ospex.org/p/${positionId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: "block",
+                fontSize: "15px",
+                fontWeight: 600,
+                color: "#5dade2",
+                marginTop: "8px",
+              }}
+            >
+              Check position status
+            </a>
+          )}
           {txHash && (
             <a
               href={`https://polygonscan.com/tx/${txHash}`}
