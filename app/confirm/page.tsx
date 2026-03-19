@@ -16,6 +16,7 @@ type FlowState =
   | "approving"
   | "submitting"
   | "posting"
+  | "matching"
   | "success"
   | "partial_success"
   | "error"
@@ -129,6 +130,8 @@ export default function ConfirmBetPage() {
   const [token, setToken] = useState<string | null>(null);
   const [preparedPayload, setPreparedPayload] = useState<TxParamsPayload | null>(null);
   const [needsApproval, setNeedsApproval] = useState(false);
+  const [positionId, setPositionId] = useState<string | null>(null);
+  const [wasMatched, setWasMatched] = useState(false);
 
   const initCalledRef = useRef(false);
 
@@ -416,8 +419,37 @@ export default function ConfirmBetPage() {
           "[confirm] Failed to record txHash:",
           await confirmRes.text()
         );
-        setFlowState("partial_success");
-        return;
+        // Still try to match — position is on-chain regardless
+      }
+
+      // 4. Complete the instant match
+      setFlowState("matching");
+
+      try {
+        const matchRes = await fetch("/api/bet-match", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            txHash: betTxHash,
+            quoteId: payload.quoteId,
+          }),
+        });
+
+        if (matchRes.ok) {
+          const matchData = (await matchRes.json()) as {
+            matched: boolean;
+            positionId: string | null;
+            matchTxHash?: string | null;
+            reason?: string;
+          };
+          if (matchData.positionId) {
+            setPositionId(matchData.positionId);
+          }
+          setWasMatched(matchData.matched);
+        }
+      } catch (matchErr) {
+        // Match failure is not a hard error — position is safe on-chain
+        console.error("[confirm] Match step failed:", matchErr);
       }
 
       setFlowState("success");
@@ -654,8 +686,21 @@ export default function ConfirmBetPage() {
         <div style={{ ...cardStyle, textAlign: "center" }}>
           <p style={{ fontSize: "40px", margin: "0 0 12px 0" }}>&#10003;</p>
           <h2 style={{ fontSize: "18px", margin: "0 0 16px 0" }}>
-            Bet Placed!
+            {wasMatched
+              ? "Bet placed and matched!"
+              : "Position created. Awaiting match."}
           </h2>
+          {!wasMatched && (
+            <p
+              style={{
+                fontSize: "13px",
+                color: hintColor,
+                margin: "0 0 16px 0",
+              }}
+            >
+              The market maker may fill this shortly.
+            </p>
+          )}
           <div style={detailRowStyle}>
             <span style={{ color: hintColor }}>Game</span>
             <span>
@@ -684,6 +729,22 @@ export default function ConfirmBetPage() {
               </span>
             </div>
           )}
+          {positionId && (
+            <a
+              href={`https://ospex.org/p/${positionId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: "block",
+                fontSize: "15px",
+                fontWeight: 600,
+                color: "#5dade2",
+                marginTop: "16px",
+              }}
+            >
+              View on Ospex
+            </a>
+          )}
           {txHash && (
             <a
               href={`https://polygonscan.com/tx/${txHash}`}
@@ -691,9 +752,9 @@ export default function ConfirmBetPage() {
               rel="noopener noreferrer"
               style={{
                 display: "block",
-                fontSize: "13px",
-                color: "#5dade2",
-                marginTop: "16px",
+                fontSize: "12px",
+                color: hintColor,
+                marginTop: positionId ? "8px" : "16px",
                 wordBreak: "break-all",
               }}
             >
@@ -705,18 +766,20 @@ export default function ConfirmBetPage() {
     );
   }
 
-  // ── In-progress states (confirming, approving, submitting, posting) ──
+  // ── In-progress states (confirming, approving, submitting, posting, matching) ──
   if (
     flowState === "confirming" ||
     flowState === "approving" ||
     flowState === "submitting" ||
-    flowState === "posting"
+    flowState === "posting" ||
+    flowState === "matching"
   ) {
     const statusMessages: Record<string, string> = {
-      confirming: "Getting fresh quote...",
+      confirming: "Getting quote...",
       approving: "Approve USDC spending in MetaMask...",
       submitting: "Confirm bet transaction in MetaMask...",
       posting: "Recording transaction...",
+      matching: "Matching your position...",
     };
 
     return (
