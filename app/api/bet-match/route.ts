@@ -1,11 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 
-function getEnvOrThrow(key: string): string {
-  const val = process.env[key];
-  if (!val) throw new Error(`Missing required env var: ${key}`);
-  return val;
-}
-
 /**
  * POST /api/bet-match
  *
@@ -21,7 +15,8 @@ export async function POST(request: NextRequest) {
   let body: { txHash?: string; quoteId?: string };
   try {
     body = await request.json();
-  } catch {
+  } catch (err) {
+    console.error("[bet-match] Invalid JSON body:", err instanceof Error ? err.message : err);
     return NextResponse.json(
       { error: "Invalid JSON body" },
       { status: 400 }
@@ -37,9 +32,16 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const apiBaseUrl = getEnvOrThrow("OSPEX_API_BASE_URL");
-
   try {
+    const apiBaseUrl = process.env.OSPEX_API_BASE_URL;
+    if (!apiBaseUrl) {
+      console.error("[bet-match] OSPEX_API_BASE_URL not configured");
+      return NextResponse.json(
+        { error: "OSPEX_API_BASE_URL not configured" },
+        { status: 500 }
+      );
+    }
+
     // ── 1. Look up positionId from tx hash (retry for indexer lag) ──
     let positionId: string | null = null;
 
@@ -62,15 +64,41 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      // Check for POSITION_NOT_FOUND error — retry
+      // Non-OK response — distinguish retryable from non-retryable
       if (!posRes.ok) {
-        const errData = (await posRes.json().catch(() => ({}))) as {
-          code?: string;
-        };
+        const rawText = await posRes.text().catch(() => "unreadable");
+        let errData: { code?: string; error?: string } = {};
+        try {
+          errData = JSON.parse(rawText) as { code?: string; error?: string };
+        } catch {
+          console.error("[bet-match] Position lookup JSON parse failed", {
+            status: posRes.status,
+            body: rawText.slice(0, 500),
+          });
+        }
+
+        // Only retry on 404 / POSITION_NOT_FOUND (expected indexer lag)
         if (errData.code === "POSITION_NOT_FOUND" && attempt < 5) {
           continue;
         }
-        // Non-retryable error or last attempt
+
+        // Non-retryable error (500, 401, 403, etc.) — stop immediately
+        if (posRes.status >= 500 || posRes.status === 401 || posRes.status === 403) {
+          console.error("[bet-match] Position lookup upstream error", {
+            status: posRes.status,
+            body: rawText.slice(0, 500),
+          });
+          return NextResponse.json(
+            {
+              matched: false,
+              positionId: null,
+              reason: `Upstream error looking up position (${posRes.status}). The position is on-chain — the market maker may match it during normal processing.`,
+            },
+            { status: 502 }
+          );
+        }
+
+        // Last attempt for any other error
         if (attempt === 5) {
           return NextResponse.json({
             matched: false,
@@ -111,10 +139,17 @@ export async function POST(request: NextRequest) {
     }
 
     // Match failed — not an error, position is safe on-chain
-    const matchErr = (await matchRes.json().catch(() => ({}))) as {
-      error?: string;
-      code?: string;
-    };
+    const rawText = await matchRes.text().catch(() => "unreadable");
+    let matchErr: { error?: string; code?: string } = {};
+    try {
+      matchErr = JSON.parse(rawText) as { error?: string; code?: string };
+    } catch {
+      console.error("[bet-match] Match response JSON parse failed", {
+        status: matchRes.status,
+        body: rawText.slice(0, 500),
+      });
+    }
+
     return NextResponse.json({
       matched: false,
       positionId,

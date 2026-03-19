@@ -2,6 +2,16 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 
+function logToServer(step: string, error: string, detail?: string) {
+  fetch("/api/debug-log", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ step, status: "error", error, detail }),
+  }).catch(() => {
+    // Logging itself failed — nothing we can do
+  });
+}
+
 // ============================================================
 // Types
 // ============================================================
@@ -132,6 +142,7 @@ export default function ConfirmBetPage() {
   const [needsApproval, setNeedsApproval] = useState(false);
   const [positionId, setPositionId] = useState<string | null>(null);
   const [wasMatched, setWasMatched] = useState(false);
+  const [failureReason, setFailureReason] = useState<"confirm" | "match" | null>(null);
 
   const initCalledRef = useRef(false);
 
@@ -167,7 +178,9 @@ export default function ConfirmBetPage() {
           setFlowState("error");
         }
       })
-      .catch(() => {
+      .catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        logToServer("validate-token", msg);
         setErrorMessage("Failed to validate bet. Check your connection.");
         setFlowState("error");
       });
@@ -219,7 +232,9 @@ export default function ConfirmBetPage() {
               method: "wallet_switchEthereumChain",
               params: [{ chainId: POLYGON_CHAIN_ID }],
             });
-          } catch {
+          } catch (switchErr) {
+            const switchMsg = switchErr instanceof Error ? switchErr.message : String(switchErr);
+            logToServer("chain-switch", switchMsg);
             setErrorMessage(
               "Please switch to Polygon network in MetaMask and refresh."
             );
@@ -230,6 +245,7 @@ export default function ConfirmBetPage() {
       } catch (err: unknown) {
         const msg =
           err instanceof Error ? err.message : "Failed to connect wallet";
+        logToServer("wallet-connect", msg);
         setErrorMessage(msg);
         setFlowState("error");
       }
@@ -330,6 +346,7 @@ export default function ConfirmBetPage() {
       setFlowState("review");
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to get quote";
+      logToServer("fetch-quote", msg);
       setErrorMessage(msg);
       setFlowState("error");
     }
@@ -415,11 +432,13 @@ export default function ConfirmBetPage() {
       });
 
       if (!confirmRes.ok) {
-        console.error(
-          "[confirm] Failed to record txHash:",
-          await confirmRes.text()
-        );
-        // Still try to match — position is on-chain regardless
+        const errBody = await confirmRes.text();
+        console.error("[confirm] Failed to record txHash:", errBody);
+        logToServer("bet-confirm-post", `HTTP ${confirmRes.status}`, errBody);
+        // Position is on-chain but server didn't confirm — show partial_success
+        setFailureReason("confirm");
+        setFlowState("partial_success");
+        return;
       }
 
       // 4. Complete the instant match
@@ -446,10 +465,23 @@ export default function ConfirmBetPage() {
             setPositionId(matchData.positionId);
           }
           setWasMatched(matchData.matched);
+        } else {
+          const errBody = await matchRes.text().catch(() => "unreadable");
+          console.error("[confirm] Match endpoint error:", matchRes.status, errBody);
+          logToServer("bet-match-http", `HTTP ${matchRes.status}`, errBody);
+          // Position is on-chain but not matched — show partial success
+          setFailureReason("match");
+          setFlowState("partial_success");
+          return;
         }
       } catch (matchErr) {
-        // Match failure is not a hard error — position is safe on-chain
+        // Network exception — position is safe on-chain but not matched
+        const matchMsg = matchErr instanceof Error ? matchErr.message : String(matchErr);
         console.error("[confirm] Match step failed:", matchErr);
+        logToServer("bet-match", matchMsg);
+        setFailureReason("match");
+        setFlowState("partial_success");
+        return;
       }
 
       setFlowState("success");
@@ -463,6 +495,7 @@ export default function ConfirmBetPage() {
       ) {
         setErrorMessage("Transaction cancelled. You can try again.");
       } else {
+        logToServer("tx-submit", msg, err instanceof Error ? err.stack : undefined);
         setErrorMessage(msg);
       }
       setFlowState("error");
@@ -639,7 +672,7 @@ export default function ConfirmBetPage() {
     );
   }
 
-  // ── Partial success (tx on-chain but server sync failed) ──
+  // ── Partial success (tx on-chain but server sync or match failed) ──
   if (flowState === "partial_success" && bet) {
     return (
       <div style={containerStyle}>
@@ -655,9 +688,26 @@ export default function ConfirmBetPage() {
               margin: "0 0 16px 0",
             }}
           >
-            Your bet was placed on-chain, but we couldn&apos;t sync it back to
-            OspexBot. The bot may not send a confirmation message.
+            {failureReason === "match"
+              ? "Your position was created on-chain but matching failed. Your position is on the orderbook and may be matched later."
+              : "Your transaction went through on-chain but we couldn\u2019t record it. Check your positions at ospex.org or contact support."}
           </p>
+          {failureReason === "match" && positionId && (
+            <a
+              href={`https://ospex.org/p/${positionId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: "block",
+                fontSize: "15px",
+                fontWeight: 600,
+                color: "#5dade2",
+                marginTop: "8px",
+              }}
+            >
+              Check position status
+            </a>
+          )}
           {txHash && (
             <a
               href={`https://polygonscan.com/tx/${txHash}`}
