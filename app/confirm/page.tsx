@@ -231,7 +231,9 @@ export default function ConfirmBetPage() {
               method: "wallet_switchEthereumChain",
               params: [{ chainId: POLYGON_CHAIN_ID }],
             });
-          } catch {
+          } catch (switchErr) {
+            const switchMsg = switchErr instanceof Error ? switchErr.message : String(switchErr);
+            logToServer("chain-switch", switchMsg);
             setErrorMessage(
               "Please switch to Polygon network in MetaMask and refresh."
             );
@@ -432,7 +434,9 @@ export default function ConfirmBetPage() {
         const errBody = await confirmRes.text();
         console.error("[confirm] Failed to record txHash:", errBody);
         logToServer("bet-confirm-post", `HTTP ${confirmRes.status}`, errBody);
-        // Still try to match — position is on-chain regardless
+        // Position is on-chain but server didn't confirm — show partial_success
+        setFlowState("partial_success");
+        return;
       }
 
       // 4. Complete the instant match
@@ -459,12 +463,21 @@ export default function ConfirmBetPage() {
             setPositionId(matchData.positionId);
           }
           setWasMatched(matchData.matched);
+        } else {
+          const errBody = await matchRes.text().catch(() => "unreadable");
+          console.error("[confirm] Match endpoint error:", matchRes.status, errBody);
+          logToServer("bet-match-http", `HTTP ${matchRes.status}`, errBody);
+          // Position is on-chain but not matched — show partial success
+          setFlowState("partial_success");
+          return;
         }
       } catch (matchErr) {
-        // Match failure is not a hard error — position is safe on-chain
+        // Network exception — position is safe on-chain but not matched
         const matchMsg = matchErr instanceof Error ? matchErr.message : String(matchErr);
         console.error("[confirm] Match step failed:", matchErr);
         logToServer("bet-match", matchMsg);
+        setFlowState("partial_success");
+        return;
       }
 
       setFlowState("success");
