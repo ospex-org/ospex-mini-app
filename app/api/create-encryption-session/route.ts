@@ -11,7 +11,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ session });
     
   } catch (error) {
-    console.error('Encryption session error:', error);
+    console.error('[create-encryption-session] Failed:', error instanceof Error ? { message: error.message, stack: error.stack } : error);
     return NextResponse.json({ error: 'Failed to create session' }, { status: 500 });
   }
 }

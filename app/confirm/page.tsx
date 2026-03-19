@@ -2,6 +2,16 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 
+function logToServer(step: string, error: string, detail?: string) {
+  fetch("/api/debug-log", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ step, status: "error", error, detail }),
+  }).catch(() => {
+    // Logging itself failed — nothing we can do
+  });
+}
+
 // ============================================================
 // Types
 // ============================================================
@@ -167,7 +177,9 @@ export default function ConfirmBetPage() {
           setFlowState("error");
         }
       })
-      .catch(() => {
+      .catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        logToServer("validate-token", msg);
         setErrorMessage("Failed to validate bet. Check your connection.");
         setFlowState("error");
       });
@@ -230,6 +242,7 @@ export default function ConfirmBetPage() {
       } catch (err: unknown) {
         const msg =
           err instanceof Error ? err.message : "Failed to connect wallet";
+        logToServer("wallet-connect", msg);
         setErrorMessage(msg);
         setFlowState("error");
       }
@@ -330,6 +343,7 @@ export default function ConfirmBetPage() {
       setFlowState("review");
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to get quote";
+      logToServer("fetch-quote", msg);
       setErrorMessage(msg);
       setFlowState("error");
     }
@@ -415,10 +429,9 @@ export default function ConfirmBetPage() {
       });
 
       if (!confirmRes.ok) {
-        console.error(
-          "[confirm] Failed to record txHash:",
-          await confirmRes.text()
-        );
+        const errBody = await confirmRes.text();
+        console.error("[confirm] Failed to record txHash:", errBody);
+        logToServer("bet-confirm-post", `HTTP ${confirmRes.status}`, errBody);
         // Still try to match — position is on-chain regardless
       }
 
@@ -449,7 +462,9 @@ export default function ConfirmBetPage() {
         }
       } catch (matchErr) {
         // Match failure is not a hard error — position is safe on-chain
+        const matchMsg = matchErr instanceof Error ? matchErr.message : String(matchErr);
         console.error("[confirm] Match step failed:", matchErr);
+        logToServer("bet-match", matchMsg);
       }
 
       setFlowState("success");
@@ -463,6 +478,7 @@ export default function ConfirmBetPage() {
       ) {
         setErrorMessage("Transaction cancelled. You can try again.");
       } else {
+        logToServer("tx-submit", msg, err instanceof Error ? err.stack : undefined);
         setErrorMessage(msg);
       }
       setFlowState("error");

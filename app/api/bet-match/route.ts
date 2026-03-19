@@ -21,7 +21,8 @@ export async function POST(request: NextRequest) {
   let body: { txHash?: string; quoteId?: string };
   try {
     body = await request.json();
-  } catch {
+  } catch (err) {
+    console.error("[bet-match] Invalid JSON body:", err instanceof Error ? err.message : err);
     return NextResponse.json(
       { error: "Invalid JSON body" },
       { status: 400 }
