@@ -40,6 +40,10 @@ interface PendingBet {
   line: number | null;
   stake: number;
   indicativeOdds: number | null;
+  indicativeOddsAmerican: number | null;
+  quoteId: string | null;
+  txParams: AgentTxParams | null;
+  quoteExpiresAt: string | null;
   awayTeam: string;
   homeTeam: string;
   matchTime: string;
@@ -166,12 +170,8 @@ function encodeApproveTransaction(
  * POST /api/bet-txparams
  *
  * Generates ready-to-submit transaction parameters for a pending bet.
- * 1. Validates the confirm token
- * 2. Verifies wallet matches
- * 3. Calls agent-server for a fresh quote (instant-match/quote with stream=false)
- * 4. Checks odds drift against user's maxDriftPercent
- * 5. Encodes the contract call using ethers
- * 6. Checks USDC allowance; includes approve tx if needed
+ * Uses the stored txParams from the bot's original quote when still valid.
+ * Falls back to a fresh quote from the agent-server if the original expired.
  */
 export async function POST(request: NextRequest) {
   let body: { token?: string; walletAddress?: string };
@@ -256,94 +256,121 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // ── 4. Get fresh quote from agent-server ──
-    const apiBaseUrl = getEnvOrThrow("OSPEX_API_BASE_URL");
+    // ── 4. Resolve quote: use stored txParams if still valid, else re-quote ──
+    let resolvedTxParams: AgentTxParams;
+    let resolvedOdds: number;
+    let resolvedOddsAmerican: number;
+    let resolvedQuoteId: string;
+    let resolvedExpiresAt: string;
 
-    const quoteBody: Record<string, unknown> = {
-      side: bet.side,
-      amountUSDC: bet.stake,
-      odds: bet.indicativeOdds ?? 2.0, // fallback to even odds if no indicative
-      wallet: walletAddress.toLowerCase(),
-      contestId: bet.contestId,
-      marketType: bet.marketType,
-    };
-    if (bet.line != null) {
-      quoteBody.line = bet.line;
-    }
+    const storedQuoteValid =
+      bet.txParams != null &&
+      bet.quoteExpiresAt != null &&
+      new Date(bet.quoteExpiresAt) > new Date() &&
+      bet.quoteId != null;
 
-    const quoteRes = await fetch(
-      `${apiBaseUrl}/v1/instant-match/quote?stream=false`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(quoteBody),
+    if (storedQuoteValid) {
+      // Use the bot's original quote — no second LLM evaluation needed
+      resolvedTxParams = bet.txParams as AgentTxParams;
+      resolvedOdds = bet.indicativeOdds ?? 2.0;
+      resolvedOddsAmerican = bet.indicativeOddsAmerican ?? 100;
+      resolvedQuoteId = bet.quoteId as string;
+      resolvedExpiresAt = bet.quoteExpiresAt as string;
+    } else {
+      // Quote expired or no stored txParams — fall back to fresh quote
+      const apiBaseUrl = getEnvOrThrow("OSPEX_API_BASE_URL");
+
+      const quoteBody: Record<string, unknown> = {
+        side: bet.side,
+        amountUSDC: bet.stake,
+        odds: bet.indicativeOdds ?? 2.0,
+        wallet: walletAddress.toLowerCase(),
+        contestId: bet.contestId,
+        marketType: bet.marketType,
+      };
+      if (bet.line != null) {
+        quoteBody.line = bet.line;
       }
-    );
 
-    if (!quoteRes.ok) {
-      const errText = await quoteRes.text().catch(() => "Unknown error");
-      console.error("[bet-txparams] Quote request failed:", quoteRes.status, errText);
-      return NextResponse.json(
-        { error: "Failed to get quote from market maker" },
-        { status: 422 }
+      const quoteRes = await fetch(
+        `${apiBaseUrl}/v1/instant-match/quote?stream=false`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(quoteBody),
+        }
       );
-    }
 
-    const quoteText = await quoteRes.text();
-    const quote = JSON.parse(quoteText.trim()) as QuoteResponse;
-
-    if (!quote.approved) {
-      return NextResponse.json(
-        { error: `Quote rejected: ${quote.reason}` },
-        { status: 422 }
-      );
-    }
-
-    // ── 5. Check odds drift ──
-    if (bet.indicativeOdds != null && bet.indicativeOdds > 0) {
-      // Load user's drift threshold from botUsers settings
-      const userDoc = await db
-        .collection("botUsers")
-        .doc(bet.telegramUserId)
-        .get();
-      const userData = userDoc.exists ? userDoc.data() : undefined;
-      const maxDriftPercent =
-        (userData?.settings?.maxDriftPercent as number | undefined) ?? 5;
-
-      const driftPercent =
-        (Math.abs(quote.approvedOddsDecimal - bet.indicativeOdds) /
-          bet.indicativeOdds) *
-        100;
-
-      if (driftPercent > maxDriftPercent) {
+      if (!quoteRes.ok) {
+        const errText = await quoteRes.text().catch(() => "Unknown error");
+        console.error("[bet-txparams] Quote request failed:", quoteRes.status, errText);
         return NextResponse.json(
-          {
-            driftExceeded: true,
-            indicativeOdds: bet.indicativeOdds,
-            finalOdds: quote.approvedOddsDecimal,
-            driftPercent: Math.round(driftPercent * 100) / 100,
-            maxDriftPercent,
-          },
-          { status: 409 }
+          { error: "Failed to get quote from market maker" },
+          { status: 422 }
         );
       }
+
+      const quoteText = await quoteRes.text();
+      const quote = JSON.parse(quoteText.trim()) as QuoteResponse;
+
+      if (!quote.approved) {
+        return NextResponse.json(
+          { error: `Quote rejected: ${quote.reason}` },
+          { status: 422 }
+        );
+      }
+
+      // Check odds drift (only for fresh quotes — stored quotes use the original odds)
+      if (bet.indicativeOdds != null && bet.indicativeOdds > 0) {
+        const userDoc = await db
+          .collection("botUsers")
+          .doc(bet.telegramUserId)
+          .get();
+        const userData = userDoc.exists ? userDoc.data() : undefined;
+        const maxDriftPercent =
+          (userData?.settings?.maxDriftPercent as number | undefined) ?? 5;
+
+        const driftPercent =
+          (Math.abs(quote.approvedOddsDecimal - bet.indicativeOdds) /
+            bet.indicativeOdds) *
+          100;
+
+        if (driftPercent > maxDriftPercent) {
+          return NextResponse.json(
+            {
+              driftExceeded: true,
+              indicativeOdds: bet.indicativeOdds,
+              finalOdds: quote.approvedOddsDecimal,
+              driftPercent: Math.round(driftPercent * 100) / 100,
+              maxDriftPercent,
+            },
+            { status: 409 }
+          );
+        }
+      }
+
+      if (!quote.txParams) {
+        return NextResponse.json(
+          { error: "Quote approved but no transaction parameters available" },
+          { status: 422 }
+        );
+      }
+
+      resolvedTxParams = quote.txParams;
+      resolvedOdds = quote.approvedOddsDecimal;
+      resolvedOddsAmerican = quote.approvedOddsAmerican;
+      resolvedQuoteId = quote.quoteId;
+      resolvedExpiresAt = quote.expiresAt;
     }
 
-    // ── 6. Encode transaction ──
-    if (!quote.txParams) {
-      return NextResponse.json(
-        { error: "Quote approved but no transaction parameters available" },
-        { status: 422 }
-      );
-    }
-
+    // ── 5. Encode transaction ──
     const positionModuleAddress = getEnvOrThrow("POSITION_MODULE_ADDRESS");
     const usdcAddress = getEnvOrThrow("USDC_ADDRESS");
     const rpcUrl = getEnvOrThrow("POLYGON_RPC_URL");
 
-    const encodedTx = encodeBetTransaction(quote.txParams, positionModuleAddress);
+    const encodedTx = encodeBetTransaction(resolvedTxParams, positionModuleAddress);
 
-    // ── 7. Check USDC allowance ──
+    // ── 6. Check USDC allowance ──
     const provider = new ethers.JsonRpcProvider(rpcUrl);
     const usdc = new ethers.Contract(usdcAddress, ERC20_ABI, provider);
     const allowance: bigint = await usdc.allowance(
@@ -351,13 +378,11 @@ export async function POST(request: NextRequest) {
       positionModuleAddress
     );
 
-    // stake in USDC with 6 decimals
     const stakeOnChain = BigInt(Math.round(bet.stake * 1_000_000));
     const needsApproval = allowance < stakeOnChain;
 
     let approveTxParams: { to: string; data: string; value: string } | undefined;
     if (needsApproval) {
-      // Approve max uint256 so user doesn't need to approve again
       const maxApproval = ethers.MaxUint256;
       approveTxParams = encodeApproveTransaction(
         usdcAddress,
@@ -366,19 +391,18 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Calculate final payout
     const finalPayout =
-      Math.round(bet.stake * quote.approvedOddsDecimal * 100) / 100;
+      Math.round(bet.stake * resolvedOdds * 100) / 100;
 
     return NextResponse.json({
       txParams: encodedTx,
-      finalOdds: quote.approvedOddsDecimal,
-      finalOddsAmerican: quote.approvedOddsAmerican,
+      finalOdds: resolvedOdds,
+      finalOddsAmerican: resolvedOddsAmerican,
       finalPayout,
       needsApproval,
       approveTxParams,
-      quoteId: quote.quoteId,
-      expiresAt: quote.expiresAt,
+      quoteId: resolvedQuoteId,
+      expiresAt: resolvedExpiresAt,
     });
   } catch (err) {
     console.error("[bet-txparams] Unexpected error:", err);
