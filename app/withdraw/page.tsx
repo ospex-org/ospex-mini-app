@@ -128,9 +128,15 @@ export default function WithdrawPage() {
         return;
       }
 
-      const accounts = (await window.ethereum.request({
-        method: "eth_requestAccounts",
+      // Skip the popup if already connected
+      let accounts = (await window.ethereum.request({
+        method: "eth_accounts",
       })) as string[];
+      if (!accounts.length) {
+        accounts = (await window.ethereum.request({
+          method: "eth_requestAccounts",
+        })) as string[];
+      }
 
       const connectedWallet = accounts[0]?.toLowerCase();
       if (!connectedWallet || connectedWallet !== expectedWallet.toLowerCase()) {
