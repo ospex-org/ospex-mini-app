@@ -31,6 +31,12 @@ interface PendingTransaction {
   txHash: string | null;
 }
 
+// ABI for decoding on-chain calldata
+const POSITION_MODULE_ABI = [
+  "function claimPosition(uint256 speculationId, uint128 oddsPairId, uint8 positionType)",
+  "function adjustUnmatchedPair(uint256 speculationId, uint128 oddsPairId, uint32 newUnmatchedExpiry, uint8 positionType, int256 amount, uint256 contributionAmount)",
+];
+
 interface TxConfirmToken {
   pendingTransactionId: string;
   telegramUserId: string;
@@ -239,8 +245,59 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Atomic update: mark token used + update pending transaction
+    // Verify calldata matches the pending transaction's txParams
     const txRef = db.collection("pendingTransactions").doc(tokenData!.pendingTransactionId);
+    const pendingTxDoc = await txRef.get();
+    if (!pendingTxDoc.exists) {
+      return NextResponse.json(
+        { success: false, error: "Pending transaction not found" },
+        { status: 404 }
+      );
+    }
+    const pendingTx = pendingTxDoc.data() as PendingTransaction;
+
+    const fullTx = await provider.getTransaction(txHash);
+    if (!fullTx || !fullTx.data) {
+      return NextResponse.json(
+        { success: false, error: "Could not fetch transaction data" },
+        { status: 404 }
+      );
+    }
+
+    const iface = new ethers.Interface(POSITION_MODULE_ABI);
+    let decoded: ethers.TransactionDescription | null;
+    try {
+      decoded = iface.parseTransaction({ data: fullTx.data });
+    } catch {
+      return NextResponse.json(
+        { success: false, error: "Transaction calldata does not match expected ABI" },
+        { status: 400 }
+      );
+    }
+
+    if (!decoded || decoded.name !== pendingTx.txParams.method) {
+      return NextResponse.json(
+        { success: false, error: `Expected method ${pendingTx.txParams.method} but got ${decoded?.name ?? "unknown"}` },
+        { status: 400 }
+      );
+    }
+
+    // Compare decoded args to stored args
+    const storedArgs = pendingTx.txParams.args;
+    const fragment = decoded.fragment;
+    for (const param of fragment.inputs) {
+      const storedVal = storedArgs[param.name];
+      if (storedVal === undefined) continue;
+      const decodedVal = decoded.args.getValue(param.name);
+      if (String(decodedVal) !== String(storedVal)) {
+        return NextResponse.json(
+          { success: false, error: `Argument ${param.name} mismatch: expected ${storedVal}, got ${decodedVal}` },
+          { status: 400 }
+        );
+      }
+    }
+
+    // Atomic update: mark token used + update pending transaction
 
     await db.runTransaction(async (firestoreTx) => {
       const txDoc = await firestoreTx.get(txRef);

@@ -55,6 +55,11 @@ export default function ClaimPage() {
           setFlow("error");
           return;
         }
+        if (data.transaction.type !== "claim") {
+          setError("This token is for a withdrawal, not a claim. Use the correct link.");
+          setFlow("error");
+          return;
+        }
         setTxDetails(data.transaction);
         setExpectedWallet(data.walletAddress);
         setFlow("ready");

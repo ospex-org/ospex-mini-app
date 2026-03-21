@@ -35,13 +35,32 @@ interface TxConfirmToken {
   used: boolean;
 }
 
+interface ClaimPositionArgs {
+  speculationId: string;
+  oddsPairId: string;
+  positionType: number;
+}
+
+interface AdjustUnmatchedPairArgs {
+  speculationId: string;
+  oddsPairId: string;
+  newUnmatchedExpiry: string;
+  positionType: number;
+  amount: string;
+  contributionAmount: string;
+}
+
+type TxParams =
+  | { method: "claimPosition"; args: ClaimPositionArgs }
+  | { method: "adjustUnmatchedPair"; args: AdjustUnmatchedPairArgs };
+
 interface PendingTransaction {
   type: "claim" | "withdraw";
   telegramUserId: string;
   walletAddress: string;
   positionId: string;
   description: string;
-  txParams: { method: string; args: Record<string, unknown> };
+  txParams: TxParams;
   status: "pending" | "submitted" | "cancelled" | "expired";
   createdAt: FirebaseFirestore.Timestamp | Date;
   expiresAt: FirebaseFirestore.Timestamp | Date;
@@ -126,7 +145,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 4. Validate method is allowed
-    const { method, args } = pendingTx.txParams;
+    const { method } = pendingTx.txParams;
     if (!ALLOWED_METHODS.includes(method)) {
       console.error(`[tx-encode] Blocked unknown method: ${method}`);
       return NextResponse.json(
@@ -135,7 +154,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 5. Encode the transaction
+    // 5. Encode the transaction with explicit field ordering
     const positionModuleAddress = process.env.POSITION_MODULE_ADDRESS;
     if (!positionModuleAddress) {
       return NextResponse.json(
@@ -145,8 +164,26 @@ export async function POST(request: NextRequest) {
     }
 
     const iface = new ethers.Interface(POSITION_MODULE_ABI);
-    const argValues = Object.values(args);
-    const data = iface.encodeFunctionData(method, argValues);
+    let data: string;
+
+    if (pendingTx.txParams.method === "claimPosition") {
+      const a = pendingTx.txParams.args;
+      data = iface.encodeFunctionData("claimPosition", [
+        a.speculationId,
+        a.oddsPairId,
+        a.positionType,
+      ]);
+    } else {
+      const a = pendingTx.txParams.args;
+      data = iface.encodeFunctionData("adjustUnmatchedPair", [
+        a.speculationId,
+        a.oddsPairId,
+        a.newUnmatchedExpiry,
+        a.positionType,
+        a.amount,
+        a.contributionAmount,
+      ]);
+    }
 
     return NextResponse.json({
       txParams: {
