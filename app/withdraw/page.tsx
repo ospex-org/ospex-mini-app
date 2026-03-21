@@ -16,6 +16,7 @@ interface TransactionDetails {
   type: "claim" | "withdraw";
   positionId: string;
   description: string;
+  txParams: { method: string; args: Record<string, unknown> };
 }
 
 declare global {
@@ -26,6 +27,52 @@ declare global {
     };
   }
 }
+
+// ── Styles ──
+
+const containerStyle: React.CSSProperties = {
+  minHeight: "100vh",
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: "24px",
+  fontFamily: "'Atkinson Hyperlegible', system-ui, sans-serif",
+  backgroundColor: "#0a0a0a",
+  color: "#f2f2f2",
+};
+
+const cardStyle: React.CSSProperties = {
+  width: "100%",
+  maxWidth: "360px",
+  backgroundColor: "#141414",
+  borderRadius: "12px",
+  padding: "32px 24px",
+};
+
+const buttonStyle: React.CSSProperties = {
+  width: "100%",
+  boxSizing: "border-box",
+  padding: "14px 24px",
+  borderRadius: "12px",
+  border: "none",
+  fontSize: "16px",
+  fontWeight: 600,
+  cursor: "pointer",
+  backgroundColor: "#e94560",
+  color: "#ffffff",
+  marginTop: "16px",
+};
+
+const detailRowStyle: React.CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  padding: "8px 0",
+  fontSize: "14px",
+  borderBottom: "1px solid rgba(255,255,255,0.06)",
+};
+
+const hintColor = "#8c8c8c";
 
 export default function WithdrawPage() {
   const [flow, setFlow] = useState<FlowState>("loading");
@@ -88,8 +135,7 @@ export default function WithdrawPage() {
       const connectedWallet = accounts[0]?.toLowerCase();
       if (!connectedWallet || connectedWallet !== expectedWallet.toLowerCase()) {
         setError(
-          `Wrong wallet connected. Expected ${expectedWallet.slice(0, 6)}...${expectedWallet.slice(-4)}. ` +
-          `Switch wallets in MetaMask and try again.`
+          `Wrong wallet connected.\nExpected: ${expectedWallet.slice(0, 6)}...${expectedWallet.slice(-4)}\nSwitch wallets in MetaMask and try again.`
         );
         setFlow("error");
         return;
@@ -184,105 +230,226 @@ export default function WithdrawPage() {
 
   // ── Render ──
 
-  return (
-    <div style={{ padding: "24px", maxWidth: "480px", margin: "0 auto", fontFamily: "system-ui, sans-serif" }}>
-      <h2 style={{ marginBottom: "16px" }}>Withdraw Position</h2>
+  // Loading
+  if (flow === "loading") {
+    return (
+      <div style={containerStyle}>
+        <div style={{ ...cardStyle, textAlign: "center" }}>
+          <p style={{ fontSize: "14px" }}>Loading...</p>
+        </div>
+      </div>
+    );
+  }
 
-      {flow === "loading" && <p>Loading...</p>}
-
-      {flow === "error" && (
-        <div>
-          <p style={{ color: "#dc3545" }}>{error}</p>
-          <p style={{ marginTop: "12px", fontSize: "14px", color: "#666" }}>
+  // Error
+  if (flow === "error") {
+    return (
+      <div style={containerStyle}>
+        <div style={{ ...cardStyle, textAlign: "center" }}>
+          <p
+            style={{
+              fontSize: "14px",
+              color: "#e94560",
+              whiteSpace: "pre-wrap",
+              marginBottom: "12px",
+            }}
+          >
+            {error}
+          </p>
+          <p style={{ fontSize: "13px", color: hintColor, margin: 0 }}>
             Go back to Telegram and try again.
           </p>
         </div>
-      )}
+      </div>
+    );
+  }
 
-      {flow === "no_metamask" && (
-        <div>
-          <p>MetaMask is required to sign this transaction.</p>
-          <p style={{ marginTop: "8px", fontSize: "14px", color: "#666" }}>
-            Open this page in the MetaMask browser.
+  // No MetaMask
+  if (flow === "no_metamask") {
+    const confirmUrl = `https://ospex-mini-app.vercel.app/withdraw?token=${encodeURIComponent(tokenRef.current)}`;
+    const metaMaskLink = `https://link.metamask.io/dapp/${encodeURIComponent(confirmUrl)}`;
+
+    return (
+      <div style={containerStyle}>
+        <div style={{ ...cardStyle, textAlign: "center" }}>
+          <h1 style={{ fontSize: "22px", margin: "0 0 8px 0" }}>Open MetaMask</h1>
+          <p style={{ fontSize: "14px", color: hintColor, margin: "0 0 12px 0" }}>
+            MetaMask isn&apos;t available in this browser. Tap below to open in
+            MetaMask&apos;s built-in browser.
           </p>
-        </div>
-      )}
-
-      {flow === "ready" && txDetails && (
-        <div>
-          <div style={{ padding: "16px", background: "#f8f9fa", borderRadius: "8px", marginBottom: "16px" }}>
-            <p style={{ fontWeight: "bold", marginBottom: "8px" }}>Withdrawing:</p>
-            <p>{txDetails.description}</p>
-          </div>
-          <button
-            onClick={handleConfirm}
+          <a
+            href={metaMaskLink}
             style={{
-              width: "100%",
-              padding: "14px",
-              background: "#007bff",
-              color: "white",
-              border: "none",
-              borderRadius: "8px",
-              fontSize: "16px",
-              fontWeight: "bold",
-              cursor: "pointer",
+              ...buttonStyle,
+              display: "block",
+              textDecoration: "none",
+              textAlign: "center",
             }}
           >
+            Open in MetaMask
+          </a>
+        </div>
+      </div>
+    );
+  }
+
+  // Ready — show position details and sign button
+  if (flow === "ready" && txDetails) {
+    const truncatedWallet = `${expectedWallet.slice(0, 6)}...${expectedWallet.slice(-4)}`;
+
+    return (
+      <div style={containerStyle}>
+        <div style={cardStyle}>
+          <h2
+            style={{ fontSize: "18px", margin: "0 0 4px 0", textAlign: "center" }}
+          >
+            Withdraw Position
+          </h2>
+          <p
+            style={{
+              fontSize: "13px",
+              color: hintColor,
+              margin: "0 0 20px 0",
+              textAlign: "center",
+            }}
+          >
+            Review and sign to withdraw your unmatched funds
+          </p>
+
+          <div style={detailRowStyle}>
+            <span style={{ color: hintColor }}>Position</span>
+            <span style={{ fontWeight: 600, textAlign: "right", maxWidth: "60%" }}>
+              {txDetails.description}
+            </span>
+          </div>
+          <div style={detailRowStyle}>
+            <span style={{ color: hintColor }}>Action</span>
+            <span>Withdraw unmatched</span>
+          </div>
+          <div style={detailRowStyle}>
+            <span style={{ color: hintColor }}>Network</span>
+            <span>Polygon</span>
+          </div>
+          <div style={{ ...detailRowStyle, borderBottom: "none" }}>
+            <span style={{ color: hintColor }}>Wallet</span>
+            <span style={{ fontFamily: "monospace", fontSize: "13px" }}>
+              {truncatedWallet}
+            </span>
+          </div>
+
+          <button style={buttonStyle} onClick={handleConfirm}>
             Sign with MetaMask
           </button>
         </div>
-      )}
+      </div>
+    );
+  }
 
-      {flow === "submitting" && (
-        <p>Confirming withdrawal on-chain... Please approve in MetaMask.</p>
-      )}
+  // In-progress states
+  if (flow === "submitting" || flow === "posting") {
+    const statusMessages: Record<string, string> = {
+      submitting: "Confirm withdrawal in MetaMask...",
+      posting: "Recording transaction...",
+    };
 
-      {flow === "posting" && <p>Recording transaction...</p>}
-
-      {flow === "success" && (
-        <div>
-          <p style={{ color: "#28a745", fontWeight: "bold" }}>Withdrawal successful!</p>
-          {txDetails && <p style={{ marginTop: "8px" }}>{txDetails.description}</p>}
-          {txHash && (
-            <p style={{ marginTop: "8px", fontSize: "14px" }}>
-              <a
-                href={`https://polygonscan.com/tx/${txHash}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{ color: "#007bff" }}
-              >
-                View on Polygonscan
-              </a>
+    return (
+      <div style={containerStyle}>
+        <div style={{ ...cardStyle, textAlign: "center" }}>
+          <p style={{ fontSize: "14px" }}>{statusMessages[flow]}</p>
+          {flow === "submitting" && (
+            <p style={{ fontSize: "12px", color: hintColor, marginTop: "8px" }}>
+              Check MetaMask for the transaction prompt.
             </p>
           )}
-          <p style={{ marginTop: "12px", fontSize: "14px", color: "#666" }}>
+        </div>
+      </div>
+    );
+  }
+
+  // Success
+  if (flow === "success") {
+    return (
+      <div style={containerStyle}>
+        <div style={{ ...cardStyle, textAlign: "center" }}>
+          <p style={{ fontSize: "40px", margin: "0 0 12px 0" }}>&#10003;</p>
+          <h2 style={{ fontSize: "18px", margin: "0 0 16px 0" }}>
+            Withdrawal Successful
+          </h2>
+          {txDetails && (
+            <p style={{ fontSize: "14px", color: hintColor, margin: "0 0 16px 0" }}>
+              {txDetails.description}
+            </p>
+          )}
+          {txHash && (
+            <a
+              href={`https://polygonscan.com/tx/${txHash}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: "block",
+                fontSize: "13px",
+                color: "#5dade2",
+                marginTop: "8px",
+                wordBreak: "break-all",
+              }}
+            >
+              View on Polygonscan
+            </a>
+          )}
+          <p style={{ fontSize: "13px", color: hintColor, marginTop: "16px" }}>
             You can close this page and return to Telegram.
           </p>
         </div>
-      )}
+      </div>
+    );
+  }
 
-      {flow === "partial_success" && (
-        <div>
-          <p style={{ color: "#ffc107", fontWeight: "bold" }}>
-            Withdrawal submitted on-chain but server confirmation failed.
-          </p>
-          <p style={{ marginTop: "8px", fontSize: "14px" }}>
-            Your withdrawal is safe. The bot will pick it up shortly.
+  // Partial success
+  if (flow === "partial_success") {
+    return (
+      <div style={containerStyle}>
+        <div style={{ ...cardStyle, textAlign: "center" }}>
+          <p style={{ fontSize: "40px", margin: "0 0 12px 0" }}>&#9888;</p>
+          <h2 style={{ fontSize: "18px", margin: "0 0 8px 0" }}>
+            Transaction Succeeded
+          </h2>
+          <p
+            style={{
+              fontSize: "14px",
+              color: "#f0ad4e",
+              margin: "0 0 16px 0",
+            }}
+          >
+            Your withdrawal went through on-chain but we couldn&apos;t record it.
+            The bot will pick it up shortly.
           </p>
           {txHash && (
-            <p style={{ marginTop: "8px", fontSize: "14px" }}>
-              <a
-                href={`https://polygonscan.com/tx/${txHash}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{ color: "#007bff" }}
-              >
-                View on Polygonscan
-              </a>
-            </p>
+            <a
+              href={`https://polygonscan.com/tx/${txHash}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: "block",
+                fontSize: "13px",
+                color: "#5dade2",
+                marginTop: "8px",
+                wordBreak: "break-all",
+              }}
+            >
+              View on Polygonscan
+            </a>
           )}
         </div>
-      )}
+      </div>
+    );
+  }
+
+  // Fallback
+  return (
+    <div style={containerStyle}>
+      <div style={{ ...cardStyle, textAlign: "center" }}>
+        <p style={{ fontSize: "14px" }}>Loading...</p>
+      </div>
     </div>
   );
 }
